@@ -135,6 +135,17 @@ const RESPONSE: [(&str, [f64; 3], u64); 4] = [
 ];
 const BLEND: [(&str, f64); 3] = [("Local", 0.0), ("Balanced", 0.15), ("Soft", 0.3)];
 
+/// Everything Instant sets besides the response curve. Keep in sync with
+/// `instantBundle` in frontend/src/lib/settings.ts.
+#[allow(clippy::type_complexity)]
+const INSTANT_BUNDLE: [(&str, fn() -> Value); 5] = [
+    ("gentle_room_lights", || false.into()),
+    ("black_frame_hold_ms", || 0.into()),
+    ("black_frame_fade_ms", || 0.into()),
+    ("instant_scene_cuts", || true.into()),
+    ("strobe_boost", || true.into()),
+];
+
 struct NumberSpec {
     id: &'static str,
     name: &'static str,
@@ -258,6 +269,12 @@ pub fn discovery_messages(cfg: &MqttConfig) -> Vec<(String, String)> {
         "Display",
         switch("display", "mdi:television"),
     );
+    add(
+        "switch",
+        "strobe_boost",
+        "Strobe boost",
+        switch("strobe_boost", "mdi:flash"),
+    );
 
     let select = |id: &str, options: Vec<&str>, icon: &str| json!({"command_topic": cfg.command_topic(id), "options": options, "icon": icon});
     add(
@@ -368,6 +385,9 @@ pub fn state_from(status: &Value, display: Option<bool>) -> Value {
     }
     if let Some(v) = flag("nanoleaf_sync_enabled") {
         state.insert("nanoleaf_sync".into(), on_off(v));
+    }
+    if let Some(v) = flag("strobe_boost") {
+        state.insert("strobe_boost".into(), on_off(v));
     }
     if let Some(v) = display {
         state.insert("display".into(), on_off(v));
@@ -480,6 +500,9 @@ pub fn parse_command(entity: &str, payload: &str, status: &Value) -> Result<ApiR
             status,
             &[("hue_sync_enabled", parse_on_off(payload)?.into())],
         ),
+        "strobe_boost" => {
+            settings_patch(status, &[("strobe_boost", parse_on_off(payload)?.into())])
+        }
         "nanoleaf_sync" => settings_patch(
             status,
             &[("nanoleaf_sync_enabled", parse_on_off(payload)?.into())],
@@ -502,11 +525,9 @@ pub fn parse_command(entity: &str, payload: &str, status: &Value) -> Result<ApiR
                 ("fall_smoothing_factor", (*f).into()),
                 ("max_color_step", (*max).into()),
             ];
-            // Matches the dashboard: Instant also drops the gentle room response and black hold.
+            // Matches the dashboard: Instant applies the whole low-latency bundle.
             if *s >= 1.0 {
-                patch.push(("gentle_room_lights", false.into()));
-                patch.push(("black_frame_hold_ms", 0.into()));
-                patch.push(("black_frame_fade_ms", 0.into()));
+                patch.extend(INSTANT_BUNDLE.iter().map(|(k, v)| (*k, v())));
             }
             settings_patch(status, &patch)
         }
@@ -861,8 +882,8 @@ mod tests {
                 assert!(command.starts_with("lg-hue-sync/") && command.ends_with("/set"));
             }
         }
-        // 4 switches, 3 selects, 5 numbers, 2 binary sensors, 3 sensors.
-        assert_eq!(messages.len(), 17);
+        // 5 switches, 3 selects, 5 numbers, 2 binary sensors, 3 sensors.
+        assert_eq!(messages.len(), 18);
     }
 
     #[test]
@@ -989,6 +1010,8 @@ mod tests {
         assert_eq!(body["gentle_room_lights"], false);
         assert_eq!(body["max_color_step"], 255);
         assert_eq!(body["black_frame_hold_ms"], 0);
+        assert_eq!(body["instant_scene_cuts"], true);
+        assert_eq!(body["strobe_boost"], true);
 
         let body = parse_command("blend", "Soft", &s).unwrap().body.unwrap();
         assert_eq!(body["spatial_blend"], 0.3);
@@ -1177,7 +1200,7 @@ mod tests {
                 let ready = {
                     let seen = published.lock().unwrap();
                     let has = |t: &str| seen.iter().any(|(topic, _)| topic == t);
-                    seen.iter().filter(|(t, _)| t.ends_with("/config")).count() == 17
+                    seen.iter().filter(|(t, _)| t.ends_with("/config")).count() == 18
                         && has("lg-hue-sync/state")
                         && seen
                             .iter()

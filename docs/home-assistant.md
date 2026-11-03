@@ -36,8 +36,9 @@ Dashboard-style persistence applies: changes made from Home Assistant are **live
 | Hue sync | switch | Release or reclaim the Hue entertainment area |
 | Nanoleaf sync | switch | Stop or resume Nanoleaf streaming |
 | Display | switch | Panel on/off without TV standby; unknown while the TV is in standby |
+| Strobe boost | switch | Flash the lights while the video strobes (Instant turns it on) |
 | Colour style | select | Soft / Default / Vivid presets |
-| Response | select | Slow / Default / Fast / Instant (Instant also turns off the gentle room-light response) |
+| Response | select | Slow / Default / Fast / Instant (Instant also applies the full low-latency bundle: no hold, instant cuts, strobe boost) |
 | Spatial blending | select | Local / Balanced / Soft |
 | Brightness, Hue brightness, Nanoleaf brightness, Saturation, Gamma | number | Same ranges as the dashboard |
 | Hue connected, Nanoleaf connected | binary sensor | Diagnostic |

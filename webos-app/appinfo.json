@@ -13,5 +13,6 @@
   "appDescription": "Philips Hue & Nanoleaf Ambient Lighting Controller",
   "requiredPermissions": [
     "all"
-  ]
+  ],
+  "disableBackHistoryAPI": true
 }

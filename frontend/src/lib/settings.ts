@@ -16,6 +16,9 @@ export interface LiveSettings {
   black_frame_fade_ms: number;
   instant_scene_cuts: boolean;
   gentle_room_lights: boolean;
+  strobe_boost: boolean;
+  strobe_hz: number;
+  histogram_preset: number;
   use_xy_gamut: boolean;
   letterbox_detection: boolean;
   hdr_tone_mapping: boolean;
@@ -47,6 +50,9 @@ export const initialSettings: LiveSettings = {
   black_frame_fade_ms: 2000,
   instant_scene_cuts: false,
   gentle_room_lights: true,
+  strobe_boost: false,
+  strobe_hz: 10,
+  histogram_preset: -1,
   use_xy_gamut: false,
   letterbox_detection: true,
   hdr_tone_mapping: false,
@@ -158,6 +164,30 @@ export const responseModes = {
   fast: [0.65, 0.65, 0.7, 64],
   instant: [1, 1, 1, 255],
 } as const;
+/** Everything Instant sets besides the response curve. Keep in sync with INSTANT_BUNDLE in src/mqtt.rs. */
+export const instantBundle = {
+  gentle_room_lights: false,
+  black_frame_hold_ms: 0,
+  black_frame_fade_ms: 0,
+  instant_scene_cuts: true,
+  strobe_boost: true,
+} satisfies Partial<LiveSettings>;
+export const strobeRates = [6, 8, 10, 12];
+export const histogramPresets = [
+  {
+    value: '-1',
+    label: 'Default',
+    help: 'Driver default. Measured on the C5: same ~10 Hz refresh as every preset.',
+  },
+  { value: '0', label: '0', help: 'Preset 0: 16 zones, ~10 Hz refresh.' },
+  { value: '1', label: '1', help: 'Preset 1: 16 zones, ~10 Hz refresh.' },
+  { value: '2', label: '2', help: 'Preset 2: 16 zones, ~10 Hz refresh.' },
+  {
+    value: '3',
+    label: '3 (test)',
+    help: 'Experimental: 14-zone layout our zone map does not match, so colours land in the wrong places. ~10 Hz.',
+  },
+];
 export const blendModes = { local: 0, balanced: 0.15, soft: 0.3 } as const;
 export function nearestStop(value: number, stops: readonly number[]) {
   return stops.reduce(

@@ -353,8 +353,11 @@ fn calibration_color(pattern: CalibrationPattern, (x, y): (f32, f32)) -> RgbColo
 fn frame_average(data: &[u8], width: u32, height: u32, is_bgra: bool) -> RgbColor {
     let mut total = [0u64; 3];
     let mut count = 0u64;
-    for y in (0..height as usize).step_by(8) {
-        for x in (0..width as usize).step_by(8) {
+    // Stride 8 on 320x180 captures; every pixel on the 4x4 histogram frame.
+    let step_x = (width as usize / 40).max(1);
+    let step_y = (height as usize / 22).max(1);
+    for y in (0..height as usize).step_by(step_y) {
+        for x in (0..width as usize).step_by(step_x) {
             let offset = (y * width as usize + x) * 4;
             if offset + 2 >= data.len() {
                 continue;
@@ -693,6 +696,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         black_frame_fade_ms: config.black_frame_fade_ms,
         instant_scene_cuts: config.instant_scene_cuts,
         gentle_room_lights: config.gentle_room_lights,
+        strobe_boost: config.strobe_boost,
+        strobe_hz: config.strobe_hz,
+        histogram_preset: config
+            .histogram_preset
+            .map_or(-1, |preset| preset.min(3) as i8),
         use_xy_gamut: config.use_xy_gamut,
         letterbox_detection: config.letterbox_detection,
         hdr_tone_mapping: config.hdr_tone_mapping,
@@ -812,6 +820,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
     // Luna replies (~10 ms each on the C5) must not stall a light update, so the
     // steady-state source and frame-rate polls run beside the loop.
+    let mut strobe = color::strobe::StrobeDetector::default();
+    strobe.configure(config.strobe_boost, config.strobe_hz);
+    let mut hue_strobe = color::strobe::StrobeColors::default();
+    let mut nanoleaf_strobe = color::strobe::StrobeColors::default();
     let probe_stop = CancellationToken::new();
     let (source_probe, fps_probe) =
         spawn_luna_probe(initial_source, config.fps == 0, probe_stop.clone());
@@ -1241,6 +1253,13 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 ns.set_max_color_step(live_st.max_color_step);
                 ns.set_alignment(live_st.nanoleaf_alignment);
             }
+            strobe.configure(live_st.strobe_boost, live_st.strobe_hz);
+            // A preset change needs a fresh START on /dev/video60: restart capture.
+            let preset = i32::from(live_st.histogram_preset.clamp(-1, 3));
+            if crate::capture::histogram::PRESET.swap(preset, Ordering::Relaxed) != preset {
+                info!("Histogram preset changed to {preset}; restarting capture");
+                pending_commands.restart = true;
+            }
             info!(
                 "Applied live settings: Hue={:.1}x, Nanoleaf={:.1}x, saturation={:.1}x, smoothing={:.2}, xy_mode={}",
                 current_hue_brightness,
@@ -1275,6 +1294,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 save_cfg.black_frame_fade_ms = live_st.black_frame_fade_ms;
                 save_cfg.instant_scene_cuts = live_st.instant_scene_cuts;
                 save_cfg.gentle_room_lights = live_st.gentle_room_lights;
+                save_cfg.strobe_boost = live_st.strobe_boost;
+                save_cfg.strobe_hz = live_st.strobe_hz;
+                save_cfg.histogram_preset =
+                    (live_st.histogram_preset >= 0).then_some(live_st.histogram_preset as u8);
                 save_cfg.use_xy_gamut = live_st.use_xy_gamut;
                 save_cfg.letterbox_detection = live_st.letterbox_detection;
                 save_cfg.hdr_tone_mapping = live_st.hdr_tone_mapping;
@@ -1578,6 +1601,17 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         let hardware_frame = capture.is_real_hardware();
         match capture.acquire_frame() {
             Ok(frame) => {
+                // Strobe boost: one cheap mean per frame, shared by both outputs.
+                let (strobe_phase, strobe_bright) = if strobe.enabled() {
+                    let luma = frame_average(frame.data, frame.width, frame.height, frame.is_bgra)
+                        .luminance();
+                    (
+                        strobe.observe(luma, std::time::Instant::now()),
+                        color::strobe::StrobeDetector::is_bright(luma),
+                    )
+                } else {
+                    (None, false)
+                };
                 if hardware_frame {
                     shared_state.preview.publish(&frame);
                     capture_recovery.frame_received(std::time::Instant::now());
@@ -1626,9 +1660,16 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                         }
 
                         let calibration = calibration_pattern(&shared_state);
-                        let sampled_zones = calibration
+                        let mut sampled_zones = calibration
                             .map(|pattern| calibration_zone_colors(pattern, &config.zones))
                             .unwrap_or(sampled_zones);
+                        if calibration.is_none() {
+                            hue_strobe.apply(
+                                strobe_phase,
+                                strobe_bright,
+                                sampled_zones.iter_mut().map(|(_, color)| color),
+                            );
+                        }
                         let channels: Vec<(u8, (u16, u16, u16))> = sampled_zones
                             .iter()
                             .map(|(channel_id, color)| {
@@ -1712,9 +1753,17 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                             frame.is_bgra,
                             is_scene_cut,
                         );
-                        let nl_colors = calibration_pattern(&shared_state)
+                        let nl_calibration = calibration_pattern(&shared_state);
+                        let mut nl_colors = nl_calibration
                             .map(|pattern| calibration_perimeter_colors(pattern, nl_colors.len()))
                             .unwrap_or(nl_colors);
+                        if nl_calibration.is_none() {
+                            nanoleaf_strobe.apply(
+                                strobe_phase,
+                                strobe_bright,
+                                nl_colors.iter_mut(),
+                            );
+                        }
 
                         // Share live sampled Nanoleaf colors with Web UI
                         *shared_state.live_nanoleaf_colors.write().unwrap() = nl_colors.clone();
@@ -2151,6 +2200,21 @@ fn spawn_luna_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frame_average_uses_every_pixel_of_the_4x4_histogram_frame() {
+        // Only the top-left pixel is bright; a stride of 8 would report full white.
+        let mut frame = [0u8, 0, 0, 255].repeat(16);
+        frame[..3].copy_from_slice(&[255, 255, 255]);
+        let average = frame_average(&frame, 4, 4, true);
+        assert_eq!(average, RgbColor::new(15, 15, 15));
+        // Large captures keep the cheap stride.
+        let big = [10u8, 20, 30, 255].repeat(320 * 180);
+        assert_eq!(
+            frame_average(&big, 320, 180, false),
+            RgbColor::new(10, 20, 30)
+        );
+    }
 
     #[test]
     fn management_updates_keep_hue_subscription_until_output_stops() {

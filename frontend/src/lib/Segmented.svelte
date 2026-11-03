@@ -22,6 +22,7 @@
   <legend>{label}</legend>
   <div
     class="segmented"
+    style:--count={options.length}
     style:--selected={Math.max(0, selected)}
     style:--selected-opacity={selected < 0 ? 0 : 1}
     role="group"

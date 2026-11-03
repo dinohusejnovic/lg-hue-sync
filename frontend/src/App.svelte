@@ -12,6 +12,9 @@
     faders,
     responseMode,
     responseModes,
+    instantBundle,
+    strobeRates,
+    histogramPresets,
     type LiveSettings,
   } from './lib/settings';
   import Segmented from './lib/Segmented.svelte';
@@ -46,7 +49,7 @@
     {
       value: 'instant',
       label: 'Instant',
-      help: 'No smoothing, step limit or black-frame hold: lights follow every flash, including strobes.',
+      help: 'Lowest delay: no smoothing, step limit or black hold; instant cuts and strobe boost on.',
     },
   ];
   const blendOptions = [
@@ -99,11 +102,8 @@
       rise_smoothing_factor: r,
       fall_smoothing_factor: f,
       max_color_step: max,
-      // Instant must also drop the gentle room response and the black-frame hold,
-      // or bulbs lag and every black strobe flash is held as the previous colour.
-      ...(value === 'instant'
-        ? { gentle_room_lights: false, black_frame_hold_ms: 0, black_frame_fade_ms: 0 }
-        : {}),
+      // Instant applies the whole low-latency bundle, including strobe boost.
+      ...(value === 'instant' ? instantBundle : {}),
     });
   }
   function changeBlend(value: string) {
@@ -363,6 +363,35 @@
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ use_xy_gamut: !checked })}
           />
+
+          <SettingToggle
+            title="Strobe boost"
+            description="When the video strobes, flash the lights at the rate below. The TV's histogram only refreshes ~10×/s, so fast strobes would otherwise blur into a slow flicker. Avoid with photosensitive viewers."
+            checked={settings?.strobe_boost ?? false}
+            disabled={!settings || model.busy}
+            onchange={(checked) => model.patch({ strobe_boost: checked })}
+          />
+          <Segmented
+            label="Strobe rate"
+            options={strobeRates.map((hz) => ({
+              value: String(hz),
+              label: `${hz} Hz`,
+              help: `Flash the lights ${hz} times per second while a strobe is detected.`,
+            }))}
+            value={String(settings?.strobe_hz ?? 10)}
+            disabled={!settings || model.busy || !settings.strobe_boost}
+            onchange={(value) => model.patch({ strobe_hz: Number(value) })}
+            onhelp={(text) => (depthHelp = text)}
+          />
+          <Segmented
+            label="Histogram preset"
+            options={histogramPresets}
+            value={String(settings?.histogram_preset ?? -1)}
+            disabled={!settings || model.busy}
+            onchange={(value) => model.patch({ histogram_preset: Number(value) })}
+            onhelp={(text) => (depthHelp = text)}
+          />
+          <p class="muted">{depthHelp}</p>
 
           <SettingToggle
             title="Gentle room lights"

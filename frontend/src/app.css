@@ -242,7 +242,8 @@ select:disabled {
 }
 .segmented {
   display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
+  /* --count comes from Segmented.svelte so 4-option rows stay on one line. */
+  grid-template-columns: repeat(var(--count, 3), minmax(0, 1fr));
   position: relative;
   isolation: isolate;
   padding: 0.25rem;
@@ -257,7 +258,7 @@ select:disabled {
   z-index: -1;
   inset-block: 0.25rem;
   inset-inline-start: 0.25rem;
-  inline-size: calc((100% - 0.5rem) / 3);
+  inline-size: calc((100% - 0.5rem) / var(--count, 3));
   border-radius: 0.65rem;
   border: 1px solid var(--glass-highlight);
   background: linear-gradient(145deg, var(--glass-highlight), transparent), var(--selection);

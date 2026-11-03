@@ -286,6 +286,11 @@ pub struct Config {
     /// Slower response for single-channel room fixtures (upstream 1.1.0 behaviour).
     #[serde(default = "default_true")]
     pub gentle_room_lights: bool,
+    /// Flash the lights while the video strobes (see `color::strobe`).
+    #[serde(default)]
+    pub strobe_boost: bool,
+    #[serde(default = "default_strobe_hz")]
+    pub strobe_hz: f32,
     /// Maximum per-component RGB change per reference frame at 30 FPS.
     #[serde(default = "default_max_color_step")]
     pub max_color_step: u8,
@@ -321,6 +326,10 @@ fn default_output_trim() -> f32 {
 
 fn default_true() -> bool {
     true
+}
+
+pub fn default_strobe_hz() -> f32 {
+    10.0
 }
 
 fn default_false() -> bool {
@@ -499,6 +508,8 @@ impl Config {
             black_frame_fade_ms: default_black_frame_fade_ms(),
             instant_scene_cuts: false,
             gentle_room_lights: true,
+            strobe_boost: false,
+            strobe_hz: default_strobe_hz(),
             max_color_step: 12,
             adaptive_throttling: true,
             zones: default_zones(),
