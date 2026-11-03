@@ -101,6 +101,10 @@ impl LightZone {
         zone
     }
 
+    pub(crate) fn uses_room_sampling(&self) -> bool {
+        self.hue_device_id.is_some() && self.hue_segment_count == Some(1)
+    }
+
     pub fn set_depth_influence(&mut self, influence: f32) {
         let Some(pos) = self.hue_channel_position else {
             return; // Legacy/manual rectangles have no recoverable room-depth coordinate.
@@ -109,7 +113,9 @@ impl LightZone {
         let y = 0.5 - pos[2].clamp(-1.0, 1.0) * 0.5;
         let depth = ((1.0 - pos[1]) * 0.5).clamp(0.0, 1.0);
         let curve = depth * depth * (3.0 - 2.0 * depth);
-        let span = 0.25 * (1.0 + 0.5 * influence.clamp(0.0, 1.0) * curve);
+        let span = 0.25
+            * (1.0 + 0.5 * influence.clamp(0.0, 1.0) * curve)
+            * if self.uses_room_sampling() { 1.5 } else { 1.0 };
         self.x_min = (x - span * 0.5).clamp(0.0, 1.0);
         self.x_max = (x + span * 0.5).clamp(0.0, 1.0);
         self.y_min = (y - span * 0.5).clamp(0.0, 1.0);
@@ -266,6 +272,11 @@ pub struct Config {
     /// When a sampled region passes the black gate, turn that output fully off without afterglow.
     #[serde(default)]
     pub strict_blackout: bool,
+    /// Whole-screen black hold and fade; both zero disables protection.
+    #[serde(default = "default_black_frame_hold_ms")]
+    pub black_frame_hold_ms: u32,
+    #[serde(default = "default_black_frame_fade_ms")]
+    pub black_frame_fade_ms: u32,
     /// Maximum per-component RGB change per reference frame at 30 FPS.
     #[serde(default = "default_max_color_step")]
     pub max_color_step: u8,
@@ -321,6 +332,14 @@ fn default_gamma() -> f32 {
 
 fn default_noise_gate() -> f32 {
     0.02
+}
+
+pub fn default_black_frame_hold_ms() -> u32 {
+    750
+}
+
+pub fn default_black_frame_fade_ms() -> u32 {
+    2000
 }
 
 fn default_smoothing_factor() -> f32 {
@@ -466,6 +485,8 @@ impl Config {
             rise_smoothing_factor: 0.35,
             fall_smoothing_factor: 0.35,
             strict_blackout: false,
+            black_frame_hold_ms: default_black_frame_hold_ms(),
+            black_frame_fade_ms: default_black_frame_fade_ms(),
             max_color_step: 12,
             adaptive_throttling: true,
             zones: default_zones(),
