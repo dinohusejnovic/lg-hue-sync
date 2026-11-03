@@ -1,4 +1,5 @@
 pub mod dile_vt;
+pub mod histogram;
 pub mod vtcapture;
 
 use std::time::{Duration, Instant};
@@ -94,6 +95,7 @@ pub trait ScreenCapture {
 }
 
 pub use dile_vt::{detect_source_fps, DileVtCapture, MockCapture};
+pub use histogram::HistogramCapture;
 pub use vtcapture::VtCapture;
 
 /// Drop the native owner before allowing another capture client to acquire the scaler.
@@ -105,10 +107,33 @@ pub fn release_capture(capture: &mut Box<dyn ScreenCapture>) {
     ));
 }
 
-/// Creates a screen capture instance, prioritizing libvtcapture (webOS 6.x / C1 OLED),
-/// falling back to dile_vt, and finally to MockCapture.
+/// Creates a screen capture instance, prioritizing the DRM-safe VtHistogram
+/// backend (webOS 24/25), then libvtcapture (webOS 6.x / C1 OLED), falling
+/// back to dile_vt, and finally to MockCapture.
 pub fn create_capture(width: u32, height: u32) -> Box<dyn ScreenCapture> {
-    // 1. Try modern webOS libvtcapture (/usr/lib/libvtcapture.so.1)
+    // 1. Try the DRM-safe VtHistogram backend (/dev/video60, webOS 24/25).
+    // This must come first: on webOS 24/25 the libvtcapture frame path passes
+    // its permission gate but yields no frames, and the histogram path reads
+    // aggregate color statistics from the video hardware — no decoded frames,
+    // no scaler ownership — so it works during DRM-protected playback.
+    // Fails fast (missing device) on host macOS, tests, and older webOS.
+    match HistogramCapture::try_new(width, height) {
+        Ok(capture) => {
+            info!(
+                "Initialized VtHistogram driver ({}) successfully.",
+                histogram::DEVICE_PATH_PUBLIC
+            );
+            return Box::new(capture);
+        }
+        Err(e) => {
+            warn!(
+                "Histogram capture not available ({}). Trying VtCapture...",
+                e
+            );
+        }
+    }
+
+    // 2. Try modern webOS libvtcapture (/usr/lib/libvtcapture.so.1)
     match VtCapture::try_new(width, height) {
         Ok(capture) => {
             info!("Initialized VtCapture driver (/usr/lib/libvtcapture.so.1) successfully.");
@@ -130,7 +155,7 @@ pub fn create_capture(width: u32, height: u32) -> Box<dyn ScreenCapture> {
         }
     }
 
-    // 2. Try legacy libdile_vt (/usr/lib/libdile_vt.so.0)
+    // 3. Try legacy libdile_vt (/usr/lib/libdile_vt.so.0)
     match DileVtCapture::try_new(width, height, 0) {
         Ok(capture) => {
             info!("Initialized DileVtCapture driver (/usr/lib/libdile_vt.so.0) successfully.");
@@ -152,7 +177,7 @@ pub fn create_capture(width: u32, height: u32) -> Box<dyn ScreenCapture> {
         }
     }
 
-    // 3. Fallback to synthetic MockCapture (host macOS, tests, CI)
+    // 4. Fallback to synthetic MockCapture (host macOS, tests, CI)
     Box::new(MockCapture::new(width, height))
 }
 

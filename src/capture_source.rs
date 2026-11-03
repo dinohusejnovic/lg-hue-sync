@@ -27,6 +27,20 @@ impl CaptureSource {
     }
 }
 
+/// Policy input for a foreground observation, given whether the active capture
+/// backend supports non-HDMI apps. The aggregate VtHistogram backend does —
+/// it reads only per-zone color statistics from the video hardware, so
+/// built-in apps and Home are observable, and reporting them as incompatible
+/// would block DRM-protected playback and defeat the backend's purpose.
+/// Frame-capture backends keep the original policy: `Unsupported` stays
+/// incompatible, `Unknown` preserves the last known policy.
+pub fn compatible_for(source: CaptureSource, app_sources: bool) -> Option<bool> {
+    match source {
+        CaptureSource::Unsupported if app_sources => None,
+        _ => source.compatible(),
+    }
+}
+
 fn parse_source(value: &Value) -> CaptureSource {
     if value["returnValue"] != true {
         return CaptureSource::Unknown;
@@ -62,6 +76,32 @@ pub async fn current_source() -> CaptureSource {
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn app_source_support_turns_unsupported_into_unknown_and_keeps_the_rest() {
+        for source in [CaptureSource::Hdmi, CaptureSource::Unknown] {
+            assert_eq!(
+                crate::capture_source::compatible_for(source, true),
+                source.compatible()
+            );
+        }
+        for source in [CaptureSource::Hdmi, CaptureSource::Unknown] {
+            assert_eq!(
+                crate::capture_source::compatible_for(source, false),
+                source.compatible()
+            );
+        }
+        // Frame backends keep the original policy for non-HDMI foreground apps.
+        assert_eq!(
+            crate::capture_source::compatible_for(CaptureSource::Unsupported, false),
+            Some(false)
+        );
+        // Aggregate backends can observe them, so the policy must not block.
+        assert_eq!(
+            crate::capture_source::compatible_for(CaptureSource::Unsupported, true),
+            None
+        );
+    }
 
     #[test]
     fn foreground_identity_classifies_only_exact_hdmi_ids_and_preserves_unknowns() {

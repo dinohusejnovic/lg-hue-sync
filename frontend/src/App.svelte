@@ -21,7 +21,9 @@
   import Diagnostics from './lib/Diagnostics.svelte';
   import { vibrate } from './lib/haptics';
   import { registerAgentTools } from './lib/agent-tools';
+  import { detectTv, installTvNavigation } from './lib/tv';
   const model = new Dashboard();
+  const tv = detectTv();
   let tab = $state('tuning'),
     theme = $state('system'),
     now = $state(Date.now());
@@ -136,10 +138,22 @@
       /* Storage may be unavailable. */
     }
     applyTheme();
+    let removeTvNavigation = () => {};
+    if (tv) {
+      document.documentElement.dataset.tv = '';
+      removeTvNavigation = installTvNavigation({
+        // Back steps out to the main view first, then leaves the app.
+        onBack: () => {
+          if (tab !== 'tuning') tab = 'tuning';
+          else window.close();
+        },
+      });
+    }
     const stop = model.start();
     const unregister = registerAgentTools(model);
     const clock = setInterval(() => (now = Date.now()), 1000);
     return () => {
+      removeTvNavigation();
       stop();
       unregister();
       clearInterval(clock);
@@ -181,6 +195,26 @@
           ? 'On'
           : 'Off'}</Toggle
     >
+    {#if tv}
+      <Toggle
+        variant="outline"
+        class="power-button"
+        bind:pressed={
+          () => settings?.hue_sync_enabled ?? false, (pressed) => model.patch({ hue_sync_enabled: pressed })
+        }
+        disabled={!settings || model.busy}>Hue {settings?.hue_sync_enabled ? 'On' : 'Off'}</Toggle
+      >
+      <Toggle
+        variant="outline"
+        class="power-button"
+        bind:pressed={
+          () => settings?.nanoleaf_sync_enabled ?? false,
+          (pressed) => model.patch({ nanoleaf_sync_enabled: pressed })
+        }
+        disabled={!settings || model.busy}
+        >Nanoleaf {settings?.nanoleaf_sync_enabled ? 'On' : 'Off'}</Toggle
+      >
+    {/if}
     <Button
       variant="outline"
       class="icon-button"
@@ -190,6 +224,7 @@
       >{#if theme === 'light'}<Sun />{:else if theme === 'dark'}<Moon />{:else}<Circle
         />{/if}</Button
     >
+    {#if tv}<Button variant="outline" onclick={() => window.close()}>Exit</Button>{/if}
   </header>
   {#if model.error}<div class="notice error" role="alert">{model.error}</div>{/if}
   <div class="dashboard-tabs" role="tablist" aria-label="Dashboard views">
@@ -274,6 +309,7 @@
               stops={fader.stops}
               format={fader.format}
               help={fader.help}
+              vertical={!tv}
               disabled={!settings || model.busy}
               onchange={(value) => changeSetting(fader.key, value)}
               onhelp={() => (help = { title: fader.label, text: fader.help })}

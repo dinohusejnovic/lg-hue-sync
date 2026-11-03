@@ -147,7 +147,7 @@ export const colourModes = [
 export const responseModes = {
   low: [0.2, 0.18, 0.22, 6],
   default: [0.35, 0.35, 0.35, 12],
-  fast: [0.65, 0.65, 0.7, 14],
+  fast: [0.65, 0.65, 0.7, 64],
 } as const;
 export const blendModes = { local: 0, balanced: 0.15, soft: 0.3 } as const;
 export function nearestStop(value: number, stops: readonly number[]) {

@@ -665,6 +665,11 @@ impl ZoneSampler {
             let x_end = (mapped_x_max * width as f32).clamp(0.0, width as f32) as u32;
             let y_start = (mapped_y_min * height as f32).clamp(0.0, (height - 1) as f32) as u32;
             let y_end = (mapped_y_max * height as f32).clamp(0.0, height as f32) as u32;
+            // Edge-anchored zones (e.g. x 0.0..0.125 on a 4x4 frame) floor to an
+            // empty exclusive range and would sample nothing; every zone must
+            // cover at least one pixel column and row.
+            let x_end = x_end.max(x_start + 1).min(width);
+            let y_end = y_end.max(y_start + 1).min(height);
 
             let mut weighted_r: f32 = 0.0;
             let mut weighted_g: f32 = 0.0;
@@ -829,6 +834,60 @@ mod tests {
         let color = results[0].1;
         assert!(color.r > 200, "sampled color: {color:?}");
         assert!(color.g < 80);
+    }
+
+    #[test]
+    fn edge_anchored_zones_still_sample_on_low_resolution_frames() {
+        // A 4x4 histogram frame with distinct colors per pixel column.
+        let width = 4u32;
+        let height = 4u32;
+        let mut data = vec![0u8; (width * height * 4) as usize];
+        let column_colors: [[u8; 3]; 4] = [[255, 0, 0], [0, 255, 0], [0, 0, 255], [255, 255, 0]];
+        for y in 0..height {
+            for x in 0..width {
+                let idx = ((y * width + x) * 4) as usize;
+                data[idx..idx + 3].copy_from_slice(&column_colors[x as usize]);
+                data[idx + 3] = 255;
+            }
+        }
+        let zone = |channel_id, name: &str, x_min, x_max, y_min, y_max| LightZone {
+            hue_channel_position: None,
+            channel_id,
+            name: name.to_string(),
+            hue_device_id: None,
+            hue_segment_index: None,
+            hue_segment_count: None,
+            hue_positions: Vec::new(),
+            x_min,
+            x_max,
+            y_min,
+            y_max,
+        };
+        // Regression: zones pinned to a screen edge with span below one pixel
+        // column/row used to floor to an empty exclusive range and sample black.
+        let mut sampler = ZoneSampler::new(
+            vec![
+                zone(0, "Left Edge", 0.0, 0.125, 0.0, 0.125),
+                zone(1, "Right Edge", 0.875, 1.0, 0.875, 1.0),
+                zone(2, "Mid", 0.375, 0.625, 0.375, 0.625),
+            ],
+            1.0,
+            false,
+            false,
+            2.0,
+            0.0,
+        );
+        sampler.set_peak_weight(0.0);
+        sampler.set_max_color_step(255);
+        let (results, _) = sampler.sample_frame(&data, width, height, false);
+        let by_channel: std::collections::BTreeMap<u8, RgbColor> =
+            results.iter().map(|(id, color)| (*id, *color)).collect();
+        // Left edge samples pixel column 0 (red), not black.
+        assert_eq!(by_channel[&0], RgbColor::new(255, 0, 0));
+        // Right edge samples pixel column 3 (yellow), not black.
+        assert_eq!(by_channel[&1], RgbColor::new(255, 255, 0));
+        // Mid zone keeps sampling its own column (green).
+        assert_eq!(by_channel[&2], RgbColor::new(0, 255, 0));
     }
 
     #[test]

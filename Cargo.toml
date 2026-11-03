@@ -32,6 +32,7 @@ yuv = { version = "0.8.19", default-features = false, features = ["professional_
 mdns-sd = { version = "0.21.6", default-features = false, features = ["async"] }
 utoipa = { version = "6", features = ["axum_extras"] }
 utoipa-axum = "0.3"
+rumqttc = { version = "0.25.1", default-features = false }
 
 [profile.release]
 opt-level = 3
@@ -41,4 +42,5 @@ panic = "abort"
 strip = true
 
 [dev-dependencies]
+bytes = "1.12.1"
 tower = { version = "0.5", features = ["util"] }

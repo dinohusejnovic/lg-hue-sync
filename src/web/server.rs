@@ -220,7 +220,7 @@ impl Preset {
             "highChroma" => (1.05, 1.65, 0.25, 1.0, 0.015, 0.4, 0.35, 0.4, false, 12),
             "neonContrast" => (1.0, 2.0, 0.45, 1.15, 0.035, 0.55, 0.45, 0.7, true, 10),
             "darkSceneDetail" => (0.8, 1.2, 0.3, 1.18, 0.04, 0.5, 0.3, 0.7, true, 8),
-            "fastResponse" => (1.1, 1.35, 0.35, 1.0, 0.015, 0.65, 0.65, 0.7, false, 14),
+            "fastResponse" => (1.1, 1.35, 0.35, 1.0, 0.015, 0.65, 0.65, 0.7, false, 64),
             "lowStimulation" => (0.55, 1.0, 0.1, 1.05, 0.025, 0.2, 0.18, 0.22, false, 6),
             _ => return Err(ApiError::BadRequest(format!("Unknown preset: {name}"))),
         };

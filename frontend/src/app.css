@@ -581,3 +581,39 @@ select {
     background: Highlight;
   }
 }
+
+/* TV mode: Magic Remote D-pad at 1920×1080, read from across the room. */
+html[data-tv] {
+  font-size: 150%;
+}
+html[data-tv] :focus,
+html[data-tv] :focus-visible {
+  outline: 4px solid var(--focus-ring);
+  outline-offset: 4px;
+}
+html[data-tv] [data-slot='button'] {
+  min-block-size: 64px;
+}
+/* Horizontal faders: Up/Down moves between rows, Left/Right adjusts the value. */
+html[data-tv] .fader-bank {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+  overflow: visible;
+}
+html[data-tv] .fader-card {
+  flex: none;
+  padding: 0.35rem 1rem;
+}
+html[data-tv] .fader.horizontal {
+  margin-block: 0.15rem;
+}
+html[data-tv] .fader input[type='range']::-webkit-slider-thumb {
+  inline-size: 44px;
+  block-size: 44px;
+}
+html[data-tv] .tuning-help {
+  position: sticky;
+  inset-block-end: 1rem;
+  background: var(--card-bg);
+}

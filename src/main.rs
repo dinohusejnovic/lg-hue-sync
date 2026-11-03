@@ -5,6 +5,7 @@ mod config;
 mod hue;
 mod local_http;
 mod luna;
+mod mqtt;
 mod nanoleaf;
 mod runtime;
 mod setup;
@@ -417,8 +418,14 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let startup_requested = observed_tv_power != Some(false);
     let initial_source = crate::capture_source::current_source().await;
     info!("Foreground capture source: {}", initial_source.label());
-    let mut source_policy =
-        CaptureSourcePolicy::new(initial_source.compatible(), startup_requested);
+    // On webOS 24/25 the VtHistogram aggregate backend is the primary capture
+    // path (see create_capture). It observes built-in apps and Home too, so a
+    // non-HDMI foreground app is not an incompatible source for it; treating
+    // it as one would block DRM-protected playback and defeat the backend.
+    let app_sources_supported = crate::capture::HistogramCapture::device_present();
+    let initial_compatible =
+        crate::capture_source::compatible_for(initial_source, app_sources_supported);
+    let mut source_policy = CaptureSourcePolicy::new(initial_compatible, startup_requested);
     let pipeline_should_run = startup_requested && !source_policy.blocked();
     if !pipeline_should_run && hue_active {
         let _ = set_hue_stream_active(&config, false);
@@ -740,6 +747,24 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         }
     };
 
+    // Home Assistant bridge: a client of the loopback API, so failures never touch the sync loop.
+    let mqtt_task = match config.mqtt.clone().filter(|mqtt| mqtt.enabled) {
+        Some(mqtt) => match mqtt.validate() {
+            Ok(()) if web_tasks.is_some() => {
+                Some(tokio::spawn(mqtt::run(mqtt, 8088, web_shutdown.clone())))
+            }
+            Ok(()) => {
+                warn!("MQTT bridge disabled: the local web API is not running");
+                None
+            }
+            Err(error) => {
+                warn!("MQTT bridge disabled: {error}");
+                None
+            }
+        },
+        None => None,
+    };
+
     let mut current_hue_brightness = config.brightness_multiplier * config.hue_output_brightness;
     let mut current_use_xy = config.use_xy_gamut;
     let mut auto_tv_power = config.auto_tv_power;
@@ -785,7 +810,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
         if last_source_poll.elapsed() >= Duration::from_secs(2) {
             last_source_poll = tokio::time::Instant::now();
-            source_policy.observe(crate::capture_source::current_source().await.compatible());
+            source_policy.observe(crate::capture_source::compatible_for(
+                crate::capture_source::current_source().await,
+                app_sources_supported,
+            ));
         }
 
         if auto_tv_power && last_tv_power_poll.elapsed() >= Duration::from_secs(2) {
@@ -909,8 +937,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 watchdog.tick();
                 if last_source_poll.elapsed() >= Duration::from_secs(2) {
                     last_source_poll = tokio::time::Instant::now();
-                    source_policy
-                        .observe(crate::capture_source::current_source().await.compatible());
+                    source_policy.observe(crate::capture_source::compatible_for(
+                        crate::capture_source::current_source().await,
+                        app_sources_supported,
+                    ));
                 }
                 if source_policy.source_paused()
                     && source_policy.blocked()
@@ -1416,7 +1446,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             pending_commands.receive(&mut command_rx);
             source_policy.manual_request(pending_commands.manual_running.take());
             source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
-            source_policy.observe(crate::capture_source::current_source().await.compatible());
+            source_policy.observe(crate::capture_source::compatible_for(
+                crate::capture_source::current_source().await,
+                app_sources_supported,
+            ));
             last_source_poll = tokio::time::Instant::now();
             pending_commands.receive(&mut command_rx);
             source_policy.manual_request(pending_commands.manual_running.take());
@@ -1743,7 +1776,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 pending_commands.receive(&mut command_rx);
                 source_policy.manual_request(pending_commands.manual_running.take());
                 source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
-                source_policy.observe(crate::capture_source::current_source().await.compatible());
+                source_policy.observe(crate::capture_source::compatible_for(
+                    crate::capture_source::current_source().await,
+                    app_sources_supported,
+                ));
                 last_source_poll = tokio::time::Instant::now();
                 pending_commands.receive(&mut command_rx);
                 source_policy.manual_request(pending_commands.manual_running.take());
@@ -1817,6 +1853,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let _ = signal_task.await;
     pending_commands.shutdown(command_rx);
     web_shutdown.cancel();
+    if let Some(task) = mqtt_task {
+        let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
+    }
     if let Some(tasks) = web_tasks {
         tasks.close();
         tasks.wait().await;

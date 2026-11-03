@@ -193,6 +193,9 @@ pub struct Config {
     pub active_preset: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub preset_overrides: BTreeMap<String, PresetTuning>,
+    /// Optional Home Assistant bridge; see `docs/home-assistant.md`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mqtt: Option<crate::mqtt::MqttConfig>,
     /// Advertise the dashboard and OpenAPI URL over Bonjour.
     #[serde(default)]
     pub bonjour_enabled: bool,
@@ -432,6 +435,7 @@ impl Config {
         Self {
             active_preset: Some("neutral".into()),
             preset_overrides: BTreeMap::new(),
+            mqtt: None,
             bonjour_enabled: false,
             auto_tv_power: true,
             hue_enabled: true,
@@ -751,6 +755,24 @@ mod tests {
                 .unwrap()
                 .bonjour_enabled
         );
+    }
+
+    #[test]
+    fn mqtt_is_optional_and_survives_a_save_round_trip() {
+        let config = Config::new_default("", "", "", "");
+        assert!(config.mqtt.is_none());
+        let mut value = serde_json::to_value(&config).unwrap();
+        assert!(value.get("mqtt").is_none(), "absent section stays absent");
+
+        value["mqtt"] = serde_json::json!({"host": "broker.local", "password": "secret"});
+        let loaded: Config = serde_json::from_value(value).unwrap();
+        let mqtt = loaded.mqtt.as_ref().unwrap();
+        assert!(mqtt.enabled && mqtt.port == 1883 && mqtt.base_topic == "lg-hue-sync");
+
+        // Every dashboard save is a load-modify-save, so the section must not be dropped.
+        let saved = serde_json::to_value(&loaded).unwrap();
+        assert_eq!(saved["mqtt"]["host"], "broker.local");
+        assert_eq!(saved["mqtt"]["password"], "secret");
     }
 
     #[test]
