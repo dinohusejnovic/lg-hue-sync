@@ -50,6 +50,11 @@ pub struct TraceEntry {
     pub t_us: u64,
     pub luma: u8,
     pub raw_changed: bool,
+    /// Percent of green-plane samples in the darkest / brightest eighth of bins,
+    /// over the two full-height halves (zones 4 and 8). Both high at once on a
+    /// full-screen strobe means one read spans several video frames.
+    pub dark_pct: u8,
+    pub bright_pct: u8,
 }
 
 const TRACE_LEN: usize = 300;
@@ -68,6 +73,22 @@ fn trace_read(payload: &[u8], zone_colors: &[[u8; 4]; ZONES], epoch: Instant) {
         .map(|c| (c[0] as u32 + c[1] as u32 + c[2] as u32) / 3)
         .sum::<u32>()
         / ZONES as u32) as u8;
+    let (mut dark, mut bright, mut total) = (0u64, 0u64, 0u64);
+    for zone in [4usize, 8] {
+        let base = zone * RECORD_SIZE + 4 + BINS * 2; // green plane
+        if let Some(plane) = payload.get(base..base + BINS * 2) {
+            for (bin, chunk) in plane.as_chunks::<2>().0.iter().enumerate() {
+                let count = u16::from_le_bytes(*chunk) as u64;
+                total += count;
+                if bin < 32 {
+                    dark += count;
+                } else if bin >= 224 {
+                    bright += count;
+                }
+            }
+        }
+    }
+    let pct = |n: u64| n.saturating_mul(100).checked_div(total).unwrap_or(0) as u8;
     if let Ok(mut trace) = TRACE.lock() {
         if trace.len() == TRACE_LEN {
             trace.pop_front();
@@ -76,6 +97,8 @@ fn trace_read(payload: &[u8], zone_colors: &[[u8; 4]; ZONES], epoch: Instant) {
             t_us: epoch.elapsed().as_micros() as u64,
             luma,
             raw_changed,
+            dark_pct: pct(dark),
+            bright_pct: pct(bright),
         });
     }
 }
@@ -92,6 +115,12 @@ const IOCTL_SET: libc::c_ulong = 0xC0185648;
 const CMD_START: u32 = 0x00982a14;
 const CMD_GET_DATA: u32 = 0x00982a16;
 const CMD_STOP: u32 = 0x00982a17;
+/// `VtHistogram::setPresetMode` (via `setPresetHistogram(0..=3)`): the value goes
+/// in the inner argument's fourth word. Library zone table: {16, 16, 16, 14}.
+const CMD_SET_PRESET: u32 = 0x00982a15;
+
+/// Optional preset applied after START; -1 leaves the driver default (library behaviour).
+pub static PRESET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 /// Fixed pixel-sample counts per zone per read; used to detect a stalled or
 /// blank histogram source (all-zero payload) and for area sanity checks.
@@ -210,6 +239,13 @@ impl HistogramCapture {
             epoch: Instant::now(),
         };
         capture.start().context("start histogram capture")?;
+        let preset = PRESET.load(Ordering::Relaxed);
+        if (0..=3).contains(&preset) {
+            let ret = capture
+                .control(CMD_SET_PRESET, 0, preset as u32)
+                .context("set histogram preset")?;
+            info!("[+] Histogram preset {preset} applied (ioctl returned {ret}).");
+        }
         // Layout probe: the zone geometry and sample-count constants were
         // calibrated on webOS 24/25 hardware. If this device reports a
         // different fixed total per zone, the layout constants would be wrong

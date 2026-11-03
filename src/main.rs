@@ -623,6 +623,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     }
 
     // 3. Initialize capture
+    if let Some(preset) = config.histogram_preset {
+        crate::capture::histogram::PRESET.store(preset.min(3) as i32, Ordering::Relaxed);
+    }
     let mut capture: Box<dyn ScreenCapture> = if pipeline_should_run {
         create_capture(config.capture_width, config.capture_height)
     } else {
