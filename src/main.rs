@@ -820,6 +820,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
     // Luna replies (~10 ms each on the C5) must not stall a light update, so the
     // steady-state source and frame-rate polls run beside the loop.
+    let mut last_raw_refreshes = 0u64;
     let mut strobe = color::strobe::StrobeDetector::default();
     strobe.configure(config.strobe_boost, config.strobe_hz);
     let mut hue_strobe = color::strobe::StrobeColors::default();
@@ -1599,14 +1600,20 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         }
 
         let hardware_frame = capture.is_real_hardware();
+        let histogram_refreshes = capture.fixed_cadence();
         match capture.acquire_frame() {
             Ok(frame) => {
                 // Strobe boost: one cheap mean per frame, shared by both outputs.
                 let (strobe_phase, strobe_bright) = if strobe.enabled() {
+                    // Only the histogram backend reports genuine hardware refreshes.
+                    let refreshed = histogram_refreshes.then(|| {
+                        let raw = crate::capture::histogram::RAW_REFRESHES.load(Ordering::Relaxed);
+                        std::mem::replace(&mut last_raw_refreshes, raw) != raw
+                    });
                     let luma = frame_average(frame.data, frame.width, frame.height, frame.is_bgra)
                         .luminance();
                     (
-                        strobe.observe(luma, std::time::Instant::now()),
+                        strobe.observe(luma, refreshed, std::time::Instant::now()),
                         color::strobe::StrobeDetector::is_bright(luma),
                     )
                 } else {

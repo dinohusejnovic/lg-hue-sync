@@ -61,6 +61,9 @@ const TRACE_LEN: usize = 300;
 pub static TRACE: std::sync::Mutex<std::collections::VecDeque<TraceEntry>> =
     std::sync::Mutex::new(std::collections::VecDeque::new());
 static RAW_PAYLOAD_HASH: AtomicU64 = AtomicU64::new(0);
+/// Reads whose raw payload differed from the previous read: the hardware's own
+/// refresh count. Strobe boost uses it to tell real video from a phase-locked strobe.
+pub static RAW_REFRESHES: AtomicU64 = AtomicU64::new(0);
 
 fn trace_read(payload: &[u8], zone_colors: &[[u8; 4]; ZONES], epoch: Instant) {
     use std::hash::{Hash, Hasher};
@@ -68,6 +71,9 @@ fn trace_read(payload: &[u8], zone_colors: &[[u8; 4]; ZONES], epoch: Instant) {
     payload.hash(&mut hasher);
     let hash = hasher.finish();
     let raw_changed = RAW_PAYLOAD_HASH.swap(hash, Ordering::Relaxed) != hash;
+    if raw_changed {
+        RAW_REFRESHES.fetch_add(1, Ordering::Relaxed);
+    }
     let luma = (zone_colors
         .iter()
         .map(|c| (c[0] as u32 + c[1] as u32 + c[2] as u32) / 3)

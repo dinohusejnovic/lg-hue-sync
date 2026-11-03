@@ -656,6 +656,8 @@ struct StatusResponse {
     hue_zones: Vec<LightZone>,
     calibration_pattern: Option<&'static str>,
     histogram_counters: HistogramCounters,
+    /// Strobe boost is currently replaying a detected video strobe.
+    strobe_active: bool,
 }
 
 /// Monotonic VtHistogram counters; diff two readings for rates.
@@ -1076,6 +1078,7 @@ async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
             .unwrap()
             .map(CalibrationPattern::name),
         histogram_counters: HistogramCounters::now(),
+        strobe_active: crate::color::strobe::ACTIVE.load(Ordering::Relaxed),
     })
 }
 
