@@ -13,6 +13,7 @@
     responseMode,
     responseModes,
     instantBundle,
+    dynamicPatch,
     strobeRates,
     histogramPresets,
     type LiveSettings,
@@ -50,6 +51,11 @@
       value: 'instant',
       label: 'Instant',
       help: 'Lowest delay: no smoothing, step limit or black hold; instant cuts and strobe boost on.',
+    },
+    {
+      value: 'dynamic',
+      label: 'Dynamic',
+      help: 'Follows the energy on screen: smooth during calm pans and breakdowns, Instant-like with strobes when the action picks up.',
     },
   ];
   const blendOptions = [
@@ -96,12 +102,17 @@
   ];
   const demo = import.meta.env.DEV;
   function changeResponse(value: string) {
+    if (value === 'dynamic') {
+      model.patch(dynamicPatch(settings));
+      return;
+    }
     const [s, r, f, max] = responseModes[value as keyof typeof responseModes];
     model.patch({
       smoothing_factor: s,
       rise_smoothing_factor: r,
       fall_smoothing_factor: f,
       max_color_step: max,
+      dynamic_response: false,
       // Instant applies the whole low-latency bundle, including strobe boost.
       ...(value === 'instant' ? instantBundle : {}),
     });
@@ -271,6 +282,20 @@
         onchange={changeResponse}
         onhelp={(text) => (presetHelp = text)}
       />
+      {#if settings?.dynamic_response}<div class="energy" role="status" aria-live="off">
+          <span>Energy</span><meter
+            min="0"
+            max="1"
+            low="0.4"
+            high="0.75"
+            optimum="0"
+            value={model.status?.energy ?? 0}
+          ></meter><span class="energy-value"
+            >{Math.round((model.status?.energy ?? 0) * 100)}%{model.status?.strobe_active
+              ? ' · strobe'
+              : ''}</span
+          >
+        </div>{/if}
       <Segmented
         label="Spatial blending"
         options={blendOptions}

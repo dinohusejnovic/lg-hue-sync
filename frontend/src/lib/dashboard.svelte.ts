@@ -10,6 +10,9 @@ export interface Status extends PreviewStatus, DiagnosticStatus {
   hue_bridge_ip: string;
   nanoleaf_ip: string;
   calibration_pattern?: string | null;
+  /** Dynamic response energy, 0..1. */
+  energy?: number;
+  strobe_active?: boolean;
 }
 export class Dashboard {
   status = $state.raw<Status | null>(null);

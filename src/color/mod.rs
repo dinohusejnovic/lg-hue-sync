@@ -1,4 +1,5 @@
 pub(crate) mod black_frame;
+pub mod energy;
 pub mod gamut;
 pub(crate) mod sampling;
 pub mod strobe;

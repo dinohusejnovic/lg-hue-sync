@@ -697,6 +697,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         instant_scene_cuts: config.instant_scene_cuts,
         gentle_room_lights: config.gentle_room_lights,
         strobe_boost: config.strobe_boost,
+        dynamic_response: config.dynamic_response,
         strobe_hz: config.strobe_hz,
         histogram_preset: config
             .histogram_preset
@@ -821,6 +822,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     // Luna replies (~10 ms each on the C5) must not stall a light update, so the
     // steady-state source and frame-rate polls run beside the loop.
     let mut last_raw_refreshes = 0u64;
+    // Dynamic response state: the samplers get energy-driven knobs on top of live settings.
+    let mut dynamic_on = config.dynamic_response;
+    let mut dynamic_base_hold = (config.black_frame_hold_ms, config.black_frame_fade_ms);
+    let mut dynamic_params: Option<color::energy::DynamicParams> = None;
+    let mut energy_meter = color::energy::EnergyMeter::default();
     let mut strobe = color::strobe::StrobeDetector::default();
     strobe.configure(config.strobe_boost, config.strobe_hz);
     let mut hue_strobe = color::strobe::StrobeColors::default();
@@ -1255,6 +1261,13 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 ns.set_alignment(live_st.nanoleaf_alignment);
             }
             strobe.configure(live_st.strobe_boost, live_st.strobe_hz);
+            // Live settings just reset the samplers; Dynamic re-applies on the next frame.
+            dynamic_on = live_st.dynamic_response;
+            dynamic_base_hold = (live_st.black_frame_hold_ms, live_st.black_frame_fade_ms);
+            dynamic_params = None;
+            if !dynamic_on {
+                energy_meter.reset();
+            }
             // A preset change needs a fresh START on /dev/video60: restart capture.
             let preset = i32::from(live_st.histogram_preset.clamp(-1, 3));
             if crate::capture::histogram::PRESET.swap(preset, Ordering::Relaxed) != preset {
@@ -1296,6 +1309,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 save_cfg.instant_scene_cuts = live_st.instant_scene_cuts;
                 save_cfg.gentle_room_lights = live_st.gentle_room_lights;
                 save_cfg.strobe_boost = live_st.strobe_boost;
+                save_cfg.dynamic_response = live_st.dynamic_response;
                 save_cfg.strobe_hz = live_st.strobe_hz;
                 save_cfg.histogram_preset =
                     (live_st.histogram_preset >= 0).then_some(live_st.histogram_preset as u8);
@@ -1619,6 +1633,43 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 } else {
                     (None, false)
                 };
+                if dynamic_on {
+                    let level = energy_meter.observe(
+                        frame.data,
+                        frame.width,
+                        frame.height,
+                        frame.is_bgra,
+                        strobe_phase.is_some(),
+                        std::time::Instant::now(),
+                    );
+                    let params = color::energy::DynamicParams::for_level(level, dynamic_params);
+                    if dynamic_params.is_none_or(|applied| params.differs(&applied)) {
+                        let hold = if params.black_hold {
+                            dynamic_base_hold
+                        } else {
+                            (0, 0)
+                        };
+                        if let Some(s) = &mut hue_sampler {
+                            s.set_temporal_response(params.smoothing, params.smoothing);
+                            s.set_max_color_step(params.max_color_step);
+                            s.set_latency_options(
+                                params.instant_scene_cuts,
+                                params.gentle_room_lights,
+                            );
+                            s.set_black_frame_timing(hold.0, hold.1);
+                        }
+                        if let Some(s) = &mut nanoleaf_sampler {
+                            s.set_temporal_response(params.smoothing, params.smoothing);
+                            s.set_max_color_step(params.max_color_step);
+                            s.set_latency_options(
+                                params.instant_scene_cuts,
+                                params.gentle_room_lights,
+                            );
+                            s.set_black_frame_timing(hold.0, hold.1);
+                        }
+                        dynamic_params = Some(params);
+                    }
+                }
                 if hardware_frame {
                     shared_state.preview.publish(&frame);
                     capture_recovery.frame_received(std::time::Instant::now());

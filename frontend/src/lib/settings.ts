@@ -17,6 +17,7 @@ export interface LiveSettings {
   instant_scene_cuts: boolean;
   gentle_room_lights: boolean;
   strobe_boost: boolean;
+  dynamic_response: boolean;
   strobe_hz: number;
   histogram_preset: number;
   use_xy_gamut: boolean;
@@ -51,6 +52,7 @@ export const initialSettings: LiveSettings = {
   instant_scene_cuts: false,
   gentle_room_lights: true,
   strobe_boost: false,
+  dynamic_response: false,
   strobe_hz: 10,
   histogram_preset: -1,
   use_xy_gamut: false,
@@ -195,7 +197,27 @@ export function nearestStop(value: number, stops: readonly number[]) {
     0,
   );
 }
+/**
+ * Dynamic response: Default as the calm base; the daemon scales towards Instant
+ * with on-screen energy. Restores the black-frame hold if Instant cleared it.
+ * Keep in sync with the "Dynamic" branch in src/mqtt.rs.
+ */
+export function dynamicPatch(settings: LiveSettings | null): Partial<LiveSettings> {
+  const [s, r, f, max] = responseModes.default;
+  return {
+    dynamic_response: true,
+    strobe_boost: true,
+    smoothing_factor: s,
+    rise_smoothing_factor: r,
+    fall_smoothing_factor: f,
+    max_color_step: max,
+    ...(settings?.black_frame_hold_ms === 0 && settings.black_frame_fade_ms === 0
+      ? { black_frame_hold_ms: 750, black_frame_fade_ms: 2000 }
+      : {}),
+  };
+}
 export function responseMode(settings: LiveSettings | null) {
+  if (settings?.dynamic_response) return 'dynamic';
   return (
     Object.entries(responseModes).find(
       ([, v]) =>

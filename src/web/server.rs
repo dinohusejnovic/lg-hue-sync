@@ -97,6 +97,10 @@ pub struct LiveSettings {
     #[serde(default)]
     #[schema(default = false)]
     pub strobe_boost: bool,
+    /// Dynamic response: gentle when the picture is calm, Instant-like when energy is high.
+    #[serde(default)]
+    #[schema(default = false)]
+    pub dynamic_response: bool,
     /// Strobe boost flash rate.
     #[serde(default = "crate::config::default_strobe_hz")]
     #[schema(minimum = 2, maximum = 12.5, default = 10.0)]
@@ -658,6 +662,8 @@ struct StatusResponse {
     histogram_counters: HistogramCounters,
     /// Strobe boost is currently replaying a detected video strobe.
     strobe_active: bool,
+    /// On-screen energy 0..1 measured for Dynamic response (0 when Dynamic is off).
+    energy: f32,
 }
 
 /// Monotonic VtHistogram counters; diff two readings for rates.
@@ -1079,6 +1085,7 @@ async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
             .map(CalibrationPattern::name),
         histogram_counters: HistogramCounters::now(),
         strobe_active: crate::color::strobe::ACTIVE.load(Ordering::Relaxed),
+        energy: crate::color::energy::current_level(),
     })
 }
 
@@ -1710,6 +1717,7 @@ mod tests {
             instant_scene_cuts: false,
             gentle_room_lights: true,
             strobe_boost: false,
+            dynamic_response: false,
             strobe_hz: crate::config::default_strobe_hz(),
             histogram_preset: -1,
             use_xy_gamut: false,

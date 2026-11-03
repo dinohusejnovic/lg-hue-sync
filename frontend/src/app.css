@@ -618,3 +618,22 @@ html[data-tv] .tuning-help {
   inset-block-end: 1rem;
   background: var(--card-bg);
 }
+
+/* Dynamic response energy meter under the Response row. */
+.energy {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-block-start: 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+.energy meter {
+  flex: 1;
+  block-size: 0.6rem;
+}
+.energy-value {
+  min-inline-size: 6.5em;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}

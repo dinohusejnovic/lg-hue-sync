@@ -133,6 +133,8 @@ const RESPONSE: [(&str, [f64; 3], u64); 4] = [
     ("Fast", [0.65, 0.65, 0.7], 64),
     ("Instant", [1.0, 1.0, 1.0], 255),
 ];
+/// Response mode driven by on-screen energy (see `color::energy`).
+const DYNAMIC: &str = "Dynamic";
 const BLEND: [(&str, f64); 3] = [("Local", 0.0), ("Balanced", 0.15), ("Soft", 0.3)];
 
 /// Everything Instant sets besides the response curve. Keep in sync with
@@ -283,7 +285,8 @@ pub fn discovery_messages(cfg: &MqttConfig) -> Vec<(String, String)> {
         "Colour style",
         select("colour", labels(&COLOUR), "mdi:palette-swatch"),
     );
-    let response: Vec<&str> = RESPONSE.iter().map(|(l, _, _)| *l).collect();
+    let mut response: Vec<&str> = RESPONSE.iter().map(|(l, _, _)| *l).collect();
+    response.push(DYNAMIC);
     add(
         "select",
         "response",
@@ -336,6 +339,16 @@ pub fn discovery_messages(cfg: &MqttConfig) -> Vec<(String, String)> {
         "tv_power",
         "TV power state",
         json!({"entity_category": "diagnostic", "icon": "mdi:power"}),
+    );
+    add(
+        "sensor",
+        "energy",
+        "Screen energy",
+        json!({
+            "unit_of_measurement": "%",
+            "state_class": "measurement",
+            "icon": "mdi:lightning-bolt",
+        }),
     );
     add(
         "sensor",
@@ -406,6 +419,9 @@ pub fn state_from(status: &Value, display: Option<bool>) -> Value {
     if let Some(v) = status["tv_power_state"].as_str() {
         state.insert("tv_power".into(), v.into());
     }
+    if let Some(v) = status["energy"].as_f64() {
+        state.insert("energy".into(), (v * 100.0).round().into());
+    }
     if let Some(v) = status["light_update_fps"].as_f64() {
         state.insert("light_fps".into(), round2(v).into());
     }
@@ -422,7 +438,9 @@ pub fn state_from(status: &Value, display: Option<bool>) -> Value {
         f("fall_smoothing_factor"),
         settings["max_color_step"].as_u64(),
     ) {
-        if let Some((label, _, _)) = RESPONSE.iter().find(|(_, v, max)| {
+        if settings["dynamic_response"] == true {
+            state.insert("response".into(), DYNAMIC.into());
+        } else if let Some((label, _, _)) = RESPONSE.iter().find(|(_, v, max)| {
             close(v[0], s) && close(v[1], r) && close(v[2], fall) && *max == step
         }) {
             state.insert("response".into(), (*label).into());
@@ -514,6 +532,23 @@ pub fn parse_command(entity: &str, payload: &str, status: &Value) -> Result<ApiR
                 .ok_or_else(|| anyhow!("unknown colour style {payload:?}"))?;
             Ok(post(&format!("/api/presets/{name}")))
         }
+        "response" if payload.eq_ignore_ascii_case(DYNAMIC) => {
+            // Matches the dashboard: Default as the calm base, energy does the rest.
+            let mut patch = vec![
+                ("dynamic_response", true.into()),
+                ("strobe_boost", true.into()),
+                ("smoothing_factor", 0.35.into()),
+                ("rise_smoothing_factor", 0.35.into()),
+                ("fall_smoothing_factor", 0.35.into()),
+                ("max_color_step", 12.into()),
+            ];
+            let settings = &status["settings"];
+            if settings["black_frame_hold_ms"] == 0 && settings["black_frame_fade_ms"] == 0 {
+                patch.push(("black_frame_hold_ms", 750.into()));
+                patch.push(("black_frame_fade_ms", 2000.into()));
+            }
+            settings_patch(status, &patch)
+        }
         "response" => {
             let (_, [s, r, f], max) = RESPONSE
                 .iter()
@@ -524,6 +559,7 @@ pub fn parse_command(entity: &str, payload: &str, status: &Value) -> Result<ApiR
                 ("rise_smoothing_factor", (*r).into()),
                 ("fall_smoothing_factor", (*f).into()),
                 ("max_color_step", (*max).into()),
+                ("dynamic_response", false.into()),
             ];
             // Matches the dashboard: Instant applies the whole low-latency bundle.
             if *s >= 1.0 {
@@ -882,8 +918,8 @@ mod tests {
                 assert!(command.starts_with("lg-hue-sync/") && command.ends_with("/set"));
             }
         }
-        // 5 switches, 3 selects, 5 numbers, 2 binary sensors, 3 sensors.
-        assert_eq!(messages.len(), 18);
+        // 5 switches, 3 selects, 5 numbers, 2 binary sensors, 4 sensors.
+        assert_eq!(messages.len(), 19);
     }
 
     #[test]
@@ -1012,6 +1048,24 @@ mod tests {
         assert_eq!(body["black_frame_hold_ms"], 0);
         assert_eq!(body["instant_scene_cuts"], true);
         assert_eq!(body["strobe_boost"], true);
+
+        let body = parse_command("response", "Fast", &s).unwrap().body.unwrap();
+        assert_eq!(body["dynamic_response"], false);
+
+        let body = parse_command("response", "dynamic", &s)
+            .unwrap()
+            .body
+            .unwrap();
+        assert_eq!(body["dynamic_response"], true);
+        assert_eq!(body["strobe_boost"], true);
+        assert_eq!(body["smoothing_factor"], 0.35);
+
+        let mut dynamic = s.clone();
+        dynamic["settings"]["dynamic_response"] = json!(true);
+        dynamic["energy"] = json!(0.426);
+        let state = state_from(&dynamic, None);
+        assert_eq!(state["response"], "Dynamic");
+        assert_eq!(state["energy"], 43.0);
 
         let body = parse_command("blend", "Soft", &s).unwrap().body.unwrap();
         assert_eq!(body["spatial_blend"], 0.3);
@@ -1200,7 +1254,7 @@ mod tests {
                 let ready = {
                     let seen = published.lock().unwrap();
                     let has = |t: &str| seen.iter().any(|(topic, _)| topic == t);
-                    seen.iter().filter(|(t, _)| t.ends_with("/config")).count() == 18
+                    seen.iter().filter(|(t, _)| t.ends_with("/config")).count() == 19
                         && has("lg-hue-sync/state")
                         && seen
                             .iter()

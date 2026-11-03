@@ -38,10 +38,11 @@ Dashboard-style persistence applies: changes made from Home Assistant are **live
 | Display | switch | Panel on/off without TV standby; unknown while the TV is in standby |
 | Strobe boost | switch | Flash the lights while the video strobes (Instant turns it on) |
 | Colour style | select | Soft / Default / Vivid presets |
-| Response | select | Slow / Default / Fast / Instant (Instant also applies the full low-latency bundle: no hold, instant cuts, strobe boost) |
+| Response | select | Slow / Default / Fast / Instant / Dynamic. Instant applies the full low-latency bundle (no hold, instant cuts, strobe boost); Dynamic scales between gentle and Instant with on-screen energy |
 | Spatial blending | select | Local / Balanced / Soft |
 | Brightness, Hue brightness, Nanoleaf brightness, Saturation, Gamma | number | Same ranges as the dashboard |
 | Hue connected, Nanoleaf connected | binary sensor | Diagnostic |
+| Screen energy | sensor | 0–100 % on-screen motion/flash energy that drives Dynamic |
 | Pipeline state, TV power state, Light update rate | sensor | Diagnostic |
 
 Values the daemon cannot map to a label (a preset or response curve set from the dashboard that is not one of the options above) show as *unknown* rather than a wrong value.

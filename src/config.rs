@@ -289,6 +289,9 @@ pub struct Config {
     /// Flash the lights while the video strobes (see `color::strobe`).
     #[serde(default)]
     pub strobe_boost: bool,
+    /// Dynamic response: smoothing follows on-screen energy (see `color::energy`).
+    #[serde(default)]
+    pub dynamic_response: bool,
     #[serde(default = "default_strobe_hz")]
     pub strobe_hz: f32,
     /// Maximum per-component RGB change per reference frame at 30 FPS.
@@ -509,6 +512,7 @@ impl Config {
             instant_scene_cuts: false,
             gentle_room_lights: true,
             strobe_boost: false,
+            dynamic_response: false,
             strobe_hz: default_strobe_hz(),
             max_color_step: 12,
             adaptive_throttling: true,
