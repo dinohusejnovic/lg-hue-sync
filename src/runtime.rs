@@ -72,6 +72,35 @@ impl CaptureSourcePolicy {
     }
 }
 
+/// A manual Stop survives daemon restarts and TV reboots through this marker
+/// beside the config file; a manual Start removes it.
+pub fn manual_stop_marker(config_path: &std::path::Path) -> std::path::PathBuf {
+    config_path.with_file_name("sync-stopped")
+}
+
+pub fn persist_manual_stop(config_path: &std::path::Path, stopped: bool) {
+    let marker = manual_stop_marker(config_path);
+    let result = if stopped {
+        std::fs::write(&marker, b"stopped by user\n")
+    } else {
+        match std::fs::remove_file(&marker) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        }
+    };
+    if let Err(error) = result {
+        tracing::warn!(
+            "Could not record manual sync state in {}: {error}",
+            marker.display()
+        );
+    }
+}
+
+/// Without Follow TV Power, a remembered manual Stop keeps sync off at startup.
+pub fn startup_manually_stopped(config_path: &std::path::Path, auto_tv_power: bool) -> bool {
+    !auto_tv_power && manual_stop_marker(config_path).exists()
+}
+
 #[derive(Default)]
 pub struct PendingCommands {
     pub desired_running: Option<bool>,
@@ -196,6 +225,21 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn manual_stop_persists_until_start_and_yields_to_follow_tv_power() {
+        let dir = std::env::temp_dir().join(format!("lhs-stop-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config = dir.join("config.json");
+        assert!(!startup_manually_stopped(&config, false));
+        persist_manual_stop(&config, true);
+        assert!(startup_manually_stopped(&config, false));
+        assert!(!startup_manually_stopped(&config, true));
+        persist_manual_stop(&config, false);
+        persist_manual_stop(&config, false);
+        assert!(!startup_manually_stopped(&config, false));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[tokio::test]
     async fn shutdown_interrupts_capture_recovery_before_driver_recreation() {

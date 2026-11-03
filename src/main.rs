@@ -418,7 +418,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     } else {
         None
     };
-    let startup_requested = observed_tv_power != Some(false);
+    let remembered_stop = runtime::startup_manually_stopped(&config_path, config.auto_tv_power);
+    if remembered_stop {
+        info!("Sync was stopped manually before this start; staying stopped until Start.");
+    }
+    let startup_requested = observed_tv_power != Some(false) && !remembered_stop;
     let initial_source = crate::capture_source::current_source().await;
     info!("Foreground capture source: {}", initial_source.label());
     // On webOS 24/25 the VtHistogram aggregate backend is the primary capture
@@ -429,6 +433,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let initial_compatible =
         crate::capture_source::compatible_for(initial_source, app_sources_supported);
     let mut source_policy = CaptureSourcePolicy::new(initial_compatible, startup_requested);
+    if remembered_stop {
+        source_policy.manual_request(Some(false));
+    }
     let pipeline_should_run = startup_requested && !source_policy.blocked();
     if !pipeline_should_run && hue_active {
         let _ = set_hue_stream_active(&config, false);
@@ -832,8 +839,13 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let mut hue_strobe = color::strobe::StrobeColors::default();
     let mut nanoleaf_strobe = color::strobe::StrobeColors::default();
     let probe_stop = CancellationToken::new();
-    let (source_probe, fps_probe) =
-        spawn_luna_probe(initial_source, config.fps == 0, probe_stop.clone());
+    let probe_mode = Arc::new(std::sync::atomic::AtomicU8::new(PROBE_SOURCE_AND_FPS));
+    let (source_probe, fps_probe) = spawn_luna_probe(
+        initial_source,
+        config.fps == 0,
+        probe_mode.clone(),
+        probe_stop.clone(),
+    );
 
     'sync_loop: while running.load(Ordering::SeqCst) {
         pending_commands.receive(&mut command_rx);
@@ -841,6 +853,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
         let loop_start = tokio::time::Instant::now();
         let mut emitted_light_update = false;
+        probe_mode.store(PROBE_SOURCE_AND_FPS, Ordering::Relaxed);
 
         watchdog.tick();
 
@@ -977,10 +990,21 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 source_policy.manual_request(pending_commands.manual_running.take());
                 source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
                 watchdog.tick();
-                if last_source_poll.elapsed() >= Duration::from_secs(2) {
+                // A manual Stop needs no source or frame-rate polling until Start.
+                probe_mode.store(
+                    if source_policy.manually_stopped() {
+                        PROBE_IDLE
+                    } else {
+                        PROBE_SOURCE
+                    },
+                    Ordering::Relaxed,
+                );
+                if !source_policy.manually_stopped()
+                    && last_source_poll.elapsed() >= Duration::from_secs(2)
+                {
                     last_source_poll = tokio::time::Instant::now();
                     source_policy.observe(crate::capture_source::compatible_for(
-                        crate::capture_source::current_source().await,
+                        *source_probe.borrow(),
                         app_sources_supported,
                     ));
                 }
@@ -2226,11 +2250,17 @@ impl WatchdogHeartbeat {
     }
 }
 
+/// What the background Luna probe should poll; manual Stop idles it completely.
+const PROBE_IDLE: u8 = 0;
+const PROBE_SOURCE: u8 = 1;
+const PROBE_SOURCE_AND_FPS: u8 = 2;
+
 /// Poll foreground source and (optionally) source frame rate every 2 s on a separate task.
 /// The sync loop reads the latest values; `None` frame rates keep the previous reading.
 fn spawn_luna_probe(
     initial_source: crate::capture_source::CaptureSource,
     poll_fps: bool,
+    mode: Arc<std::sync::atomic::AtomicU8>,
     stop: CancellationToken,
 ) -> (
     tokio::sync::watch::Receiver<crate::capture_source::CaptureSource>,
@@ -2244,8 +2274,12 @@ fn spawn_luna_probe(
                 _ = stop.cancelled() => break,
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {}
             }
+            let mode = mode.load(Ordering::Relaxed);
+            if mode == PROBE_IDLE {
+                continue;
+            }
             source_tx.send_replace(crate::capture_source::current_source().await);
-            if poll_fps {
+            if poll_fps && mode == PROBE_SOURCE_AND_FPS {
                 if let Some(fps) = detect_source_fps().await {
                     fps_tx.send_replace(Some(fps));
                 }

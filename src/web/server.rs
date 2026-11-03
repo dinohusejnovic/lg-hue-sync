@@ -1209,6 +1209,7 @@ async fn display_control(
 )]
 async fn start(State(state): State<AppState>) -> Result<Json<StatusMessage>, ApiError> {
     state.shared.send_command(ControlCommand::Start).await?;
+    remember_manual_stop(&state, false).await;
     Ok(Json(StatusMessage { status: "starting" }))
 }
 
@@ -1222,7 +1223,16 @@ async fn start(State(state): State<AppState>) -> Result<Json<StatusMessage>, Api
 )]
 async fn stop(State(state): State<AppState>) -> Result<Json<StatusMessage>, ApiError> {
     state.shared.send_command(ControlCommand::Stop).await?;
+    remember_manual_stop(&state, true).await;
     Ok(Json(StatusMessage { status: "stopping" }))
+}
+
+async fn remember_manual_stop(state: &AppState, stopped: bool) {
+    let config_path = state.config_path.clone();
+    let _ = tokio::task::spawn_blocking(move || {
+        crate::runtime::persist_manual_stop(&config_path, stopped)
+    })
+    .await;
 }
 
 /// Queue start or stop according to actual pipeline state.

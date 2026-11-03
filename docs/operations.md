@@ -450,6 +450,10 @@ These endpoints never send standby/power-on commands. Standby or unknown states
 are rejected. Successful responses report observed panel state, rather than
 assuming a command changed it. Display off also pauses both ambient outputs, independently of Follow TV power.
 Display on resumes an automatic pause; a manual Stop remains stopped.
+With Follow TV power off, a manual Stop (dashboard, TV app, `/api/stop` or Home
+Assistant) is remembered in `sync-stopped` beside `config.json`, so daemon
+restarts and TV reboots stay stopped until Start; the daemon also stops polling
+Luna while manually stopped. With Follow TV power on, power-on starts sync.
 TV audio is not muted or rerouted. The display preference is not saved to QSync
 configuration. The existing API is LAN-only and unauthenticated.
 
