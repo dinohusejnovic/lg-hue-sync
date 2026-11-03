@@ -844,8 +844,13 @@ fn build_router(state: AppState) -> anyhow::Result<Router> {
         .with_state(state))
 }
 
-async fn root() -> Html<&'static str> {
-    Html(EMBEDDED_UI_HTML)
+/// `no-cache` so an open tab or installed web app revalidates after a daemon update
+/// instead of running an older dashboard against the new API.
+async fn root() -> impl IntoResponse {
+    (
+        [(axum::http::header::CACHE_CONTROL, "no-cache")],
+        Html(EMBEDDED_UI_HTML),
+    )
 }
 
 fn embedded_asset(content_type: &'static str, bytes: &'static [u8]) -> impl IntoResponse {
@@ -2121,6 +2126,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn dashboard_page_must_revalidate_after_updates() {
+        use tower::ServiceExt;
+        let (app, _receiver) = test_router();
+        let response = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["cache-control"], "no-cache");
+        assert!(response.headers()["content-type"]
+            .to_str()
+            .unwrap()
+            .starts_with("text/html"));
     }
 
     #[tokio::test]
