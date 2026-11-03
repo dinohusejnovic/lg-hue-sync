@@ -131,7 +131,7 @@ const RESPONSE: [(&str, [f64; 3], u64); 4] = [
     ("Slow", [0.2, 0.18, 0.22], 6),
     ("Default", [0.35, 0.35, 0.35], 12),
     ("Fast", [0.65, 0.65, 0.7], 64),
-    ("Instant", [1.0, 1.0, 1.0], 64),
+    ("Instant", [1.0, 1.0, 1.0], 255),
 ];
 const BLEND: [(&str, f64); 3] = [("Local", 0.0), ("Balanced", 0.15), ("Soft", 0.3)];
 
@@ -502,9 +502,11 @@ pub fn parse_command(entity: &str, payload: &str, status: &Value) -> Result<ApiR
                 ("fall_smoothing_factor", (*f).into()),
                 ("max_color_step", (*max).into()),
             ];
-            // Matches the dashboard: Instant also releases the gentle room response.
+            // Matches the dashboard: Instant also drops the gentle room response and black hold.
             if *s >= 1.0 {
                 patch.push(("gentle_room_lights", false.into()));
+                patch.push(("black_frame_hold_ms", 0.into()));
+                patch.push(("black_frame_fade_ms", 0.into()));
             }
             settings_patch(status, &patch)
         }
@@ -985,6 +987,8 @@ mod tests {
             .unwrap();
         assert_eq!(body["smoothing_factor"], 1.0);
         assert_eq!(body["gentle_room_lights"], false);
+        assert_eq!(body["max_color_step"], 255);
+        assert_eq!(body["black_frame_hold_ms"], 0);
 
         let body = parse_command("blend", "Soft", &s).unwrap().body.unwrap();
         assert_eq!(body["spatial_blend"], 0.3);

@@ -46,7 +46,7 @@
     {
       value: 'instant',
       label: 'Instant',
-      help: 'No temporal smoothing and room bulbs at full speed; lowest delay, most flicker.',
+      help: 'No smoothing, step limit or black-frame hold: lights follow every flash, including strobes.',
     },
   ];
   const blendOptions = [
@@ -99,8 +99,11 @@
       rise_smoothing_factor: r,
       fall_smoothing_factor: f,
       max_color_step: max,
-      // The gentle room response would still slow single-channel bulbs.
-      ...(value === 'instant' ? { gentle_room_lights: false } : {}),
+      // Instant must also drop the gentle room response and the black-frame hold,
+      // or bulbs lag and every black strobe flash is held as the previous colour.
+      ...(value === 'instant'
+        ? { gentle_room_lights: false, black_frame_hold_ms: 0, black_frame_fade_ms: 0 }
+        : {}),
     });
   }
   function changeBlend(value: string) {

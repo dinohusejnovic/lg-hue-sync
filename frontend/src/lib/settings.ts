@@ -123,9 +123,9 @@ export const faders: {
   {
     key: 'max_color_step',
     label: 'Scene limit',
-    stops: [4, 6, 8, 12, 16, 24, 32, 48, 64],
-    format: (v) => `${v} steps`,
-    help: 'Maximum RGB component change per 1/30 second, including scene cuts. Lower values produce gentler transitions.',
+    stops: [4, 6, 8, 12, 16, 24, 32, 48, 64, 255],
+    format: (v) => (v >= 255 ? 'Off' : `${v} steps`),
+    help: 'Maximum RGB component change per 1/30 second, including scene cuts. Lower values produce gentler transitions; Off lets the lights follow strobes.',
   },
   {
     key: 'noise_gate_threshold',
@@ -156,7 +156,7 @@ export const responseModes = {
   low: [0.2, 0.18, 0.22, 6],
   default: [0.35, 0.35, 0.35, 12],
   fast: [0.65, 0.65, 0.7, 64],
-  instant: [1, 1, 1, 64],
+  instant: [1, 1, 1, 255],
 } as const;
 export const blendModes = { local: 0, balanced: 0.15, soft: 0.3 } as const;
 export function nearestStop(value: number, stops: readonly number[]) {

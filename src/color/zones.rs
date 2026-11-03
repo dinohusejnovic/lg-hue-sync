@@ -417,7 +417,8 @@ impl ColorProcessor {
         } else {
             current.lerp(target, alpha)
         };
-        if is_scene_cut && self.instant_scene_cuts {
+        // 255 means no step limit (Instant response); cuts can opt out separately.
+        if self.max_color_step == u8::MAX || (is_scene_cut && self.instant_scene_cuts) {
             next
         } else {
             limit_color_step(current, next, max_step)
@@ -668,7 +669,18 @@ impl ZoneSampler {
         height: u32,
         is_bgra: bool,
     ) -> (Vec<(u8, RgbColor)>, bool) {
-        let now = Instant::now();
+        self.sample_frame_at(data, width, height, is_bgra, Instant::now())
+    }
+
+    /// `sample_frame` with an explicit clock, so timing behaviour is testable.
+    pub fn sample_frame_at(
+        &mut self,
+        data: &[u8],
+        width: u32,
+        height: u32,
+        is_bgra: bool,
+        now: Instant,
+    ) -> (Vec<(u8, RgbColor)>, bool) {
         let elapsed = self
             .last_sample
             .replace(now)
@@ -1243,6 +1255,104 @@ mod tests {
         let fast_room = edge.for_room();
         let fast_next = fast_room.process(target, target, 1.0, current, false, REFERENCE_FRAME);
         assert_eq!(fast_next, edge_next);
+    }
+
+    /// Six single-channel edge columns, like the C5 living room, on 4x4 histogram frames.
+    fn strobe_sampler(black_level: u8) -> (ZoneSampler, Vec<u8>, Vec<u8>) {
+        let column = |id: u8, x_min: f32, x_max: f32| LightZone {
+            hue_channel_position: None,
+            channel_id: id,
+            name: format!("Column {id}"),
+            hue_device_id: Some(format!("device-{id}")),
+            hue_segment_index: None,
+            hue_segment_count: Some(1),
+            hue_positions: Vec::new(),
+            x_min,
+            x_max,
+            y_min: 0.0,
+            y_max: 1.0,
+        };
+        let zones = (0..6)
+            .map(|i| {
+                if i % 2 == 0 {
+                    column(i, 0.81, 1.0)
+                } else {
+                    column(i, 0.0, 0.19)
+                }
+            })
+            .collect();
+        let sampler = ZoneSampler::new(zones, 0.35, false, true, 1.0, 0.02);
+        let frame = |v: u8| [v, v, v, 255].repeat(16);
+        (sampler, frame(255), frame(black_level))
+    }
+
+    /// Brightness of channel 0 for 1 s of a 10 Hz black/white strobe sampled at 60 Hz.
+    fn run_strobe(sampler: &mut ZoneSampler, white: &[u8], black: &[u8]) -> Vec<u8> {
+        let start = Instant::now();
+        (0..60)
+            .map(|frame| {
+                let data = if (frame / 3) % 2 == 0 { white } else { black };
+                let now = start + REFERENCE_FRAME / 2 * frame;
+                let (colors, _) = sampler.sample_frame_at(data, 4, 4, true, now);
+                colors[0].1.r
+            })
+            .collect()
+    }
+
+    fn configure(
+        sampler: &mut ZoneSampler,
+        rise: f32,
+        fall: f32,
+        step: u8,
+        hold: (u32, u32),
+        gentle: bool,
+        cuts: bool,
+    ) {
+        sampler.set_temporal_response(rise, fall);
+        sampler.set_max_color_step(step);
+        sampler.set_black_frame_timing(hold.0, hold.1);
+        sampler.set_latency_options(cuts, gentle);
+        sampler.set_peak_weight(0.15);
+        sampler.set_spatial_blend(0.15);
+    }
+
+    #[test]
+    fn instant_response_follows_a_10hz_strobe_for_either_black_level() {
+        for black_level in [0u8, 17] {
+            // Instant as the dashboard applies it: no smoothing, no step limit,
+            // no black-frame hold, no gentle room response.
+            let (mut sampler, white, black) = strobe_sampler(black_level);
+            configure(&mut sampler, 1.0, 1.0, 255, (0, 0), false, false);
+            let out = run_strobe(&mut sampler, &white, &black);
+            for (frame, value) in out.iter().enumerate().skip(6) {
+                let expected = if (frame / 3) % 2 == 0 {
+                    255
+                } else {
+                    black_level
+                };
+                assert_eq!(
+                    *value, expected,
+                    "black={black_level} frame {frame}: {out:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn black_frame_hold_masks_a_strobe_which_is_why_instant_turns_it_off() {
+        let (mut sampler, white, black) = strobe_sampler(0);
+        configure(&mut sampler, 1.0, 1.0, 255, (750, 2000), false, false);
+        let out = run_strobe(&mut sampler, &white, &black);
+        assert!(out[6..].iter().all(|v| *v == 255), "{out:?}");
+    }
+
+    #[test]
+    fn default_response_still_rate_limits_strobes() {
+        let (mut sampler, white, black) = strobe_sampler(17);
+        configure(&mut sampler, 0.35, 0.35, 12, (750, 2000), true, false);
+        let out = run_strobe(&mut sampler, &white, &black);
+        let swing = out[24..].iter().max().unwrap() - out[24..].iter().min().unwrap();
+        assert!(swing < 64, "default stays gentle: {out:?}");
     }
 
     #[test]

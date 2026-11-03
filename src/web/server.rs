@@ -103,7 +103,8 @@ pub struct LiveSettings {
     pub auto_tv_power: bool,
     #[serde(default)]
     pub nanoleaf_alignment: NanoleafAlignment,
-    #[schema(minimum = 4, maximum = 64)]
+    /// 4..=64 steps per 1/30 s, or 255 to remove the limit (Instant response).
+    #[schema(minimum = 4, maximum = 255)]
     pub max_color_step: u8,
 }
 
@@ -172,9 +173,9 @@ impl LiveSettings {
                 "black_frame_hold_ms must be between 0 and 5000; black_frame_fade_ms must be between 0 and 10000".to_string(),
             ));
         }
-        if !(4..=64).contains(&self.max_color_step) {
+        if !(4..=64).contains(&self.max_color_step) && self.max_color_step != u8::MAX {
             return Err(ApiError::BadRequest(
-                "max_color_step must be between 4 and 64".to_string(),
+                "max_color_step must be between 4 and 64, or 255 for no limit".to_string(),
             ));
         }
         if self.nanoleaf_alignment.perimeter_offset >= 40 {
@@ -2223,6 +2224,12 @@ mod tests {
         assert!(matches!(input.validate(), Err(ApiError::BadRequest(_))));
         input.gamma = 1.0;
         input.nanoleaf_alignment.perimeter_offset = 40;
+        assert!(matches!(input.validate(), Err(ApiError::BadRequest(_))));
+        input.nanoleaf_alignment.perimeter_offset = 0;
+        // 255 is the explicit "no step limit" value used by Instant; 65..=254 stay invalid.
+        input.max_color_step = 255;
+        assert!(input.validate().is_ok());
+        input.max_color_step = 65;
         assert!(matches!(input.validate(), Err(ApiError::BadRequest(_))));
     }
 
