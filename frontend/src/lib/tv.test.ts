@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { pickNext, type Box } from './tv';
+import { pickNext, wheelPixels, type Box } from './tv';
 
 const box = (left: number, top: number, width = 100, height = 40): Box => ({
   left,
@@ -29,5 +29,13 @@ describe('pickNext', () => {
     expect(pickNext(from, 'down', [box(200, 100), box(200, 200)])).toBe(-1);
     expect(pickNext(from, 'right', [box(0, 200)])).toBe(-1);
     expect(pickNext(from, 'up', [])).toBe(-1);
+  });
+});
+
+describe('wheelPixels', () => {
+  test('passes pixel deltas through and converts line deltas', () => {
+    expect(wheelPixels({ deltaY: 120, deltaMode: 0 })).toBe(120);
+    expect(wheelPixels({ deltaY: 3, deltaMode: 1 })).toBe(120);
+    expect(wheelPixels({ deltaY: 0, deltaMode: 0 })).toBe(0);
   });
 });

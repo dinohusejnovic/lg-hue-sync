@@ -151,6 +151,29 @@ export function installTvNavigation(options: { onBack: () => void }): () => void
     target.scrollIntoView({ block: 'center', inline: 'nearest' });
   };
 
+  // Magic Remote wheel: webOS only scrolls web apps natively with
+  // `useNativeScroll`. If a wheel event leaves the page where it was, scroll it here.
+  const onWheel = (event: WheelEvent) => {
+    if (event.defaultPrevented || event.ctrlKey) return;
+    const before = window.scrollY;
+    const delta = wheelPixels(event);
+    if (delta === 0) return;
+    requestAnimationFrame(() => {
+      if (window.scrollY === before) window.scrollBy({ top: delta, behavior: 'auto' });
+    });
+  };
+
   document.addEventListener('keydown', onKeyDown);
-  return () => document.removeEventListener('keydown', onKeyDown);
+  window.addEventListener('wheel', onWheel, { passive: true });
+  return () => {
+    document.removeEventListener('keydown', onKeyDown);
+    window.removeEventListener('wheel', onWheel);
+  };
+}
+
+/** Wheel delta in pixels; line/page modes (some remotes) are converted. */
+export function wheelPixels(event: Pick<WheelEvent, 'deltaY' | 'deltaMode'>): number {
+  if (event.deltaMode === 1) return event.deltaY * 40;
+  if (event.deltaMode === 2) return event.deltaY * window.innerHeight * 0.9;
+  return event.deltaY;
 }

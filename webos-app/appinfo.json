@@ -14,5 +14,6 @@
   "requiredPermissions": [
     "all"
   ],
-  "disableBackHistoryAPI": true
+  "disableBackHistoryAPI": true,
+  "useNativeScroll": true
 }
