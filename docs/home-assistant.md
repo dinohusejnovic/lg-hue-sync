@@ -37,13 +37,13 @@ Dashboard-style persistence applies: changes made from Home Assistant are **live
 | Nanoleaf sync | switch | Stop or resume Nanoleaf streaming |
 | Display | switch | Panel on/off without TV standby; unknown while the TV is in standby |
 | Colour style | select | Soft / Default / Vivid presets |
-| Response | select | Slow / Default / Fast |
+| Response | select | Slow / Default / Fast / Instant (Instant also turns off the gentle room-light response) |
 | Spatial blending | select | Local / Balanced / Soft |
 | Brightness, Hue brightness, Nanoleaf brightness, Saturation, Gamma | number | Same ranges as the dashboard |
 | Hue connected, Nanoleaf connected | binary sensor | Diagnostic |
 | Pipeline state, TV power state, Light update rate | sensor | Diagnostic |
 
-Values the daemon cannot map to a label (a preset or response curve set from the dashboard that is not one of the three above) show as *unknown* rather than a wrong value.
+Values the daemon cannot map to a label (a preset or response curve set from the dashboard that is not one of the options above) show as *unknown* rather than a wrong value.
 
 ## HomeKit
 

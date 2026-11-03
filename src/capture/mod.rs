@@ -92,6 +92,11 @@ pub trait ScreenCapture {
     fn is_real_hardware(&self) -> bool {
         false
     }
+    /// Backends whose reads are cheap and follow every video frame run at the full
+    /// 60 Hz instead of matching the source rate (which would add up to 41 ms on 24p).
+    fn fixed_cadence(&self) -> bool {
+        false
+    }
 }
 
 pub use dile_vt::{detect_source_fps, DileVtCapture, MockCapture};

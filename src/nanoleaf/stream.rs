@@ -518,6 +518,11 @@ impl NanoleafPerimeterSampler {
         self.processor.set_max_color_step(step);
     }
 
+    pub fn set_latency_options(&mut self, instant_scene_cuts: bool, gentle_room_lights: bool) {
+        self.processor
+            .set_latency_options(instant_scene_cuts, gentle_room_lights);
+    }
+
     pub fn set_noise_gate_threshold(&mut self, threshold: f32) {
         self.processor.set_noise_gate_threshold(threshold);
     }

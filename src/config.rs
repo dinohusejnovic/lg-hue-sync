@@ -277,6 +277,12 @@ pub struct Config {
     pub black_frame_hold_ms: u32,
     #[serde(default = "default_black_frame_fade_ms")]
     pub black_frame_fade_ms: u32,
+    /// Opt-in: let scene cuts bypass the colour step (flash-safety) limit.
+    #[serde(default)]
+    pub instant_scene_cuts: bool,
+    /// Slower response for single-channel room fixtures (upstream 1.1.0 behaviour).
+    #[serde(default = "default_true")]
+    pub gentle_room_lights: bool,
     /// Maximum per-component RGB change per reference frame at 30 FPS.
     #[serde(default = "default_max_color_step")]
     pub max_color_step: u8,
@@ -487,6 +493,8 @@ impl Config {
             strict_blackout: false,
             black_frame_hold_ms: default_black_frame_hold_ms(),
             black_frame_fade_ms: default_black_frame_fade_ms(),
+            instant_scene_cuts: false,
+            gentle_room_lights: true,
             max_color_step: 12,
             adaptive_throttling: true,
             zones: default_zones(),

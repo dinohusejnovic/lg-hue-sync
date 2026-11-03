@@ -570,6 +570,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         sampler.set_temporal_response(config.rise_smoothing_factor, config.fall_smoothing_factor);
         sampler.set_strict_blackout(config.strict_blackout);
         sampler.set_black_frame_timing(config.black_frame_hold_ms, config.black_frame_fade_ms);
+        sampler.set_latency_options(config.instant_scene_cuts, config.gentle_room_lights);
         sampler.set_peak_weight(config.peak_weight);
         sampler.set_spatial_blend(config.spatial_blend);
         sampler.set_gamma(config.gamma);
@@ -614,6 +615,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         sampler.set_temporal_response(config.rise_smoothing_factor, config.fall_smoothing_factor);
         sampler.set_strict_blackout(config.strict_blackout);
         sampler.set_black_frame_timing(config.black_frame_hold_ms, config.black_frame_fade_ms);
+        sampler.set_latency_options(config.instant_scene_cuts, config.gentle_room_lights);
         sampler.set_peak_weight(config.peak_weight);
         sampler.set_spatial_blend(config.spatial_blend);
         sampler.set_gamma(config.gamma);
@@ -631,7 +633,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     };
 
     // Determine target framerate (supports auto-matching source refresh rate 23.976..60.0 Hz)
-    let detected_fps = if config.fps == 0 {
+    let detected_fps = if config.fps == 0 && !capture.fixed_cadence() {
         detect_source_fps().await
     } else {
         None
@@ -686,6 +688,8 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         strict_blackout: config.strict_blackout,
         black_frame_hold_ms: config.black_frame_hold_ms,
         black_frame_fade_ms: config.black_frame_fade_ms,
+        instant_scene_cuts: config.instant_scene_cuts,
+        gentle_room_lights: config.gentle_room_lights,
         use_xy_gamut: config.use_xy_gamut,
         letterbox_detection: config.letterbox_detection,
         hdr_tone_mapping: config.hdr_tone_mapping,
@@ -803,6 +807,12 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         PipelineState::Paused
     };
 
+    // Luna replies (~10 ms each on the C5) must not stall a light update, so the
+    // steady-state source and frame-rate polls run beside the loop.
+    let probe_stop = CancellationToken::new();
+    let (source_probe, fps_probe) =
+        spawn_luna_probe(initial_source, config.fps == 0, probe_stop.clone());
+
     'sync_loop: while running.load(Ordering::SeqCst) {
         pending_commands.receive(&mut command_rx);
         source_policy.manual_request(pending_commands.manual_running.take());
@@ -815,7 +825,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         if last_source_poll.elapsed() >= Duration::from_secs(2) {
             last_source_poll = tokio::time::Instant::now();
             source_policy.observe(crate::capture_source::compatible_for(
-                crate::capture_source::current_source().await,
+                *source_probe.borrow(),
                 app_sources_supported,
             ));
         }
@@ -1197,6 +1207,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 );
                 s.set_strict_blackout(live_st.strict_blackout);
                 s.set_black_frame_timing(live_st.black_frame_hold_ms, live_st.black_frame_fade_ms);
+                s.set_latency_options(live_st.instant_scene_cuts, live_st.gentle_room_lights);
                 s.set_hdr_tone_mapping(live_st.hdr_tone_mapping);
                 s.set_letterbox_detection(live_st.letterbox_detection);
                 s.set_saturation_boost(live_st.saturation_boost);
@@ -1214,6 +1225,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 );
                 ns.set_strict_blackout(live_st.strict_blackout);
                 ns.set_black_frame_timing(live_st.black_frame_hold_ms, live_st.black_frame_fade_ms);
+                ns.set_latency_options(live_st.instant_scene_cuts, live_st.gentle_room_lights);
                 ns.set_hdr_tone_mapping(live_st.hdr_tone_mapping);
                 ns.set_saturation_boost(live_st.saturation_boost);
                 ns.set_brightness_multiplier(
@@ -1258,6 +1270,8 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 save_cfg.strict_blackout = live_st.strict_blackout;
                 save_cfg.black_frame_hold_ms = live_st.black_frame_hold_ms;
                 save_cfg.black_frame_fade_ms = live_st.black_frame_fade_ms;
+                save_cfg.instant_scene_cuts = live_st.instant_scene_cuts;
+                save_cfg.gentle_room_lights = live_st.gentle_room_lights;
                 save_cfg.use_xy_gamut = live_st.use_xy_gamut;
                 save_cfg.letterbox_detection = live_st.letterbox_detection;
                 save_cfg.hdr_tone_mapping = live_st.hdr_tone_mapping;
@@ -1334,6 +1348,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                         sampler.set_black_frame_timing(
                             live_st.black_frame_hold_ms,
                             live_st.black_frame_fade_ms,
+                        );
+                        sampler.set_latency_options(
+                            live_st.instant_scene_cuts,
+                            live_st.gentle_room_lights,
                         );
                         sampler.set_peak_weight(live_st.peak_weight);
                         sampler.set_spatial_blend(live_st.spatial_blend);
@@ -1514,7 +1532,12 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         // In auto FPS mode, dynamically update cadence if TV source rate changed (e.g. film started)
         if config.fps == 0 && last_source_fps_poll.elapsed() >= Duration::from_secs(2) {
             last_source_fps_poll = tokio::time::Instant::now();
-            if let Some(new_fps) = detect_source_fps().await {
+            let detected = if capture.fixed_cadence() {
+                Some(60.0)
+            } else {
+                *fps_probe.borrow()
+            };
+            if let Some(new_fps) = detected {
                 let clamped = new_fps.clamp(20.0, 60.0);
                 if (clamped - target_fps).abs() > 0.5 {
                     target_fps = clamped;
@@ -1825,7 +1848,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 }
 
                 // Auto-adapt to new source refresh rate if enabled
-                if config.fps == 0 {
+                if config.fps == 0 && !capture.fixed_cadence() {
                     if let Some(new_fps) = detect_source_fps().await {
                         let clamped = new_fps.clamp(20.0, 60.0);
                         if (clamped - target_fps).abs() > 0.5 {
@@ -1882,6 +1905,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     signal_task.abort();
     let _ = signal_task.await;
     pending_commands.shutdown(command_rx);
+    probe_stop.cancel();
     web_shutdown.cancel();
     if let Some(task) = mqtt_task {
         let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
@@ -2090,6 +2114,35 @@ impl WatchdogHeartbeat {
             .unwrap_or(Duration::from_millis(250))
             .min(Duration::from_millis(250))
     }
+}
+
+/// Poll foreground source and (optionally) source frame rate every 2 s on a separate task.
+/// The sync loop reads the latest values; `None` frame rates keep the previous reading.
+fn spawn_luna_probe(
+    initial_source: crate::capture_source::CaptureSource,
+    poll_fps: bool,
+    stop: CancellationToken,
+) -> (
+    tokio::sync::watch::Receiver<crate::capture_source::CaptureSource>,
+    tokio::sync::watch::Receiver<Option<f64>>,
+) {
+    let (source_tx, source_rx) = tokio::sync::watch::channel(initial_source);
+    let (fps_tx, fps_rx) = tokio::sync::watch::channel(None);
+    tokio::spawn(async move {
+        loop {
+            tokio::select! {
+                _ = stop.cancelled() => break,
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            }
+            source_tx.send_replace(crate::capture_source::current_source().await);
+            if poll_fps {
+                if let Some(fps) = detect_source_fps().await {
+                    fps_tx.send_replace(Some(fps));
+                }
+            }
+        }
+    });
+    (source_rx, fps_rx)
 }
 
 #[cfg(test)]

@@ -386,6 +386,10 @@ impl ScreenCapture for HistogramCapture {
     fn is_real_hardware(&self) -> bool {
         true
     }
+
+    fn fixed_cadence(&self) -> bool {
+        true
+    }
 }
 
 impl Drop for HistogramCapture {

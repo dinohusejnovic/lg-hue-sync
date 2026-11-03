@@ -43,6 +43,11 @@
       help: 'Balanced responsiveness and scene-change limiting.',
     },
     { value: 'fast', label: 'Fast', help: 'Faster transitions and larger scene-change steps.' },
+    {
+      value: 'instant',
+      label: 'Instant',
+      help: 'No temporal smoothing and room bulbs at full speed; lowest delay, most flicker.',
+    },
   ];
   const blendOptions = [
     {
@@ -94,6 +99,8 @@
       rise_smoothing_factor: r,
       fall_smoothing_factor: f,
       max_color_step: max,
+      // The gentle room response would still slow single-channel bulbs.
+      ...(value === 'instant' ? { gentle_room_lights: false } : {}),
     });
   }
   function changeBlend(value: string) {
@@ -202,7 +209,8 @@
         variant="outline"
         class="power-button"
         bind:pressed={
-          () => settings?.hue_sync_enabled ?? false, (pressed) => model.patch({ hue_sync_enabled: pressed })
+          () => settings?.hue_sync_enabled ?? false,
+          (pressed) => model.patch({ hue_sync_enabled: pressed })
         }
         disabled={!settings || model.busy}>Hue {settings?.hue_sync_enabled ? 'On' : 'Off'}</Toggle
       >
@@ -351,6 +359,22 @@
             checked={settings ? !settings.use_xy_gamut : false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ use_xy_gamut: !checked })}
+          />
+
+          <SettingToggle
+            title="Gentle room lights"
+            description="Slower, steadier response for single-channel Hue bulbs. Off follows the screen as fast as the gradients."
+            checked={settings?.gentle_room_lights ?? true}
+            disabled={!settings || model.busy}
+            onchange={(checked) => model.patch({ gentle_room_lights: checked })}
+          />
+
+          <SettingToggle
+            title="Instant scene cuts"
+            description="Hard cuts land in one frame instead of ramping. This removes the flash-safety limit: strobing content will strobe the room. Avoid with photosensitive viewers."
+            checked={settings?.instant_scene_cuts ?? false}
+            disabled={!settings || model.busy}
+            onchange={(checked) => model.patch({ instant_scene_cuts: checked })}
           />
 
           <SettingToggle

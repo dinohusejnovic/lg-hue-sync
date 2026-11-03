@@ -85,6 +85,14 @@ pub struct LiveSettings {
     #[serde(default = "crate::config::default_black_frame_fade_ms")]
     #[schema(minimum = 0, maximum = 10000, default = 2000)]
     pub black_frame_fade_ms: u32,
+    /// Opt-in: scene cuts bypass the colour step (flash-safety) limit and land in one frame.
+    #[serde(default)]
+    #[schema(default = false)]
+    pub instant_scene_cuts: bool,
+    /// Slower response for single-channel room fixtures.
+    #[serde(default = "default_true")]
+    #[schema(default = true)]
+    pub gentle_room_lights: bool,
     pub use_xy_gamut: bool,
     pub letterbox_detection: bool,
     pub hdr_tone_mapping: bool,
@@ -1625,6 +1633,8 @@ mod tests {
             strict_blackout: false,
             black_frame_hold_ms: crate::config::default_black_frame_hold_ms(),
             black_frame_fade_ms: crate::config::default_black_frame_fade_ms(),
+            instant_scene_cuts: false,
+            gentle_room_lights: true,
             use_xy_gamut: false,
             letterbox_detection: true,
             hdr_tone_mapping: false,

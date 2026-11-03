@@ -7,8 +7,19 @@ use std::time::{Duration, Instant};
 #[derive(Default)]
 struct State {
     packet: Option<Vec<u8>>,
+    /// A packet newer than the last one sent; it goes out at the minimum gap.
+    fresh: bool,
     error: Option<String>,
     stopped: bool,
+}
+
+/// Keep-alive repeat of an unchanged packet at Hue's recommended ~50 Hz.
+const REPEAT_INTERVAL: Duration = Duration::from_millis(20);
+/// New colours go out as soon as this gap allows (~60 Hz cap) instead of waiting for the repeat.
+const MIN_SEND_GAP: Duration = Duration::from_micros(16_500);
+
+fn send_due(last_sent: Instant, fresh: bool) -> Instant {
+    last_sent + if fresh { MIN_SEND_GAP } else { REPEAT_INTERVAL }
 }
 
 /// Repeat cached output at Hue's recommended cadence without resampling static colours.
@@ -29,28 +40,35 @@ impl RepeatingHueStream {
             .name("hue-output".into())
             .spawn(move || {
                 let (lock, wake) = &*shared;
-                let mut next = Instant::now();
+                let mut last_sent = Instant::now() - REPEAT_INTERVAL;
                 loop {
                     let mut state = lock.lock().unwrap();
-                    while !state.stopped && (state.packet.is_none() || Instant::now() < next) {
-                        state = if state.packet.is_none() {
-                            wake.wait(state).unwrap()
-                        } else {
-                            wake.wait_timeout(state, next.saturating_duration_since(Instant::now()))
-                                .unwrap()
-                                .0
-                        };
+                    loop {
+                        if state.stopped {
+                            break;
+                        }
+                        if state.packet.is_none() {
+                            state = wake.wait(state).unwrap();
+                            continue;
+                        }
+                        let due = send_due(last_sent, state.fresh);
+                        let now = Instant::now();
+                        if now >= due {
+                            break;
+                        }
+                        state = wake.wait_timeout(state, due - now).unwrap().0;
                     }
                     if state.stopped {
                         break;
                     }
                     let packet = state.packet.clone().unwrap();
+                    state.fresh = false;
                     drop(state);
                     if let Err(error) = send(&packet) {
                         lock.lock().unwrap().error = Some(error.to_string());
                         break;
                     }
-                    next = Instant::now() + Duration::from_millis(20);
+                    last_sent = Instant::now();
                 }
             })?;
         Ok(Self {
@@ -66,6 +84,7 @@ impl RepeatingHueStream {
             return Err(anyhow!("Hue transport failed: {error}"));
         }
         state.packet = Some(packet.to_vec());
+        state.fresh = true;
         wake.notify_one();
         Ok(())
     }
@@ -85,6 +104,16 @@ impl Drop for RepeatingHueStream {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fresh_packets_use_the_short_gap_and_repeats_the_keepalive_interval() {
+        let t = Instant::now();
+        assert_eq!(send_due(t, true), t + MIN_SEND_GAP);
+        assert_eq!(send_due(t, false), t + REPEAT_INTERVAL);
+        assert!(MIN_SEND_GAP < REPEAT_INTERVAL);
+        // Never faster than ~60 Hz, so the bridge is not flooded.
+        assert!(MIN_SEND_GAP >= Duration::from_micros(16_000));
+    }
     use std::sync::mpsc;
 
     #[test]

@@ -127,10 +127,11 @@ const COLOUR: [(&str, &str); 3] = [
     ("Vivid", "vividColor"),
 ];
 /// (label, smoothing, rise, fall, max colour step)
-const RESPONSE: [(&str, [f64; 3], u64); 3] = [
+const RESPONSE: [(&str, [f64; 3], u64); 4] = [
     ("Slow", [0.2, 0.18, 0.22], 6),
     ("Default", [0.35, 0.35, 0.35], 12),
     ("Fast", [0.65, 0.65, 0.7], 64),
+    ("Instant", [1.0, 1.0, 1.0], 64),
 ];
 const BLEND: [(&str, f64); 3] = [("Local", 0.0), ("Balanced", 0.15), ("Soft", 0.3)];
 
@@ -495,15 +496,17 @@ pub fn parse_command(entity: &str, payload: &str, status: &Value) -> Result<ApiR
                 .iter()
                 .find(|(label, _, _)| label.eq_ignore_ascii_case(payload))
                 .ok_or_else(|| anyhow!("unknown response {payload:?}"))?;
-            settings_patch(
-                status,
-                &[
-                    ("smoothing_factor", (*s).into()),
-                    ("rise_smoothing_factor", (*r).into()),
-                    ("fall_smoothing_factor", (*f).into()),
-                    ("max_color_step", (*max).into()),
-                ],
-            )
+            let mut patch = vec![
+                ("smoothing_factor", (*s).into()),
+                ("rise_smoothing_factor", (*r).into()),
+                ("fall_smoothing_factor", (*f).into()),
+                ("max_color_step", (*max).into()),
+            ];
+            // Matches the dashboard: Instant also releases the gentle room response.
+            if *s >= 1.0 {
+                patch.push(("gentle_room_lights", false.into()));
+            }
+            settings_patch(status, &patch)
         }
         "blend" => {
             let (_, v) = BLEND
@@ -975,6 +978,13 @@ mod tests {
         assert_eq!(body["rise_smoothing_factor"], 0.65);
         assert_eq!(body["fall_smoothing_factor"], 0.7);
         assert_eq!(body["max_color_step"], 64);
+
+        let body = parse_command("response", "Instant", &s)
+            .unwrap()
+            .body
+            .unwrap();
+        assert_eq!(body["smoothing_factor"], 1.0);
+        assert_eq!(body["gentle_room_lights"], false);
 
         let body = parse_command("blend", "Soft", &s).unwrap().body.unwrap();
         assert_eq!(body["spatial_blend"], 0.3);

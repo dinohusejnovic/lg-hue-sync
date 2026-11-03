@@ -14,6 +14,8 @@ export interface LiveSettings {
   strict_blackout: boolean;
   black_frame_hold_ms: number;
   black_frame_fade_ms: number;
+  instant_scene_cuts: boolean;
+  gentle_room_lights: boolean;
   use_xy_gamut: boolean;
   letterbox_detection: boolean;
   hdr_tone_mapping: boolean;
@@ -43,6 +45,8 @@ export const initialSettings: LiveSettings = {
   strict_blackout: false,
   black_frame_hold_ms: 750,
   black_frame_fade_ms: 2000,
+  instant_scene_cuts: false,
+  gentle_room_lights: true,
   use_xy_gamut: false,
   letterbox_detection: true,
   hdr_tone_mapping: false,
@@ -152,6 +156,7 @@ export const responseModes = {
   low: [0.2, 0.18, 0.22, 6],
   default: [0.35, 0.35, 0.35, 12],
   fast: [0.65, 0.65, 0.7, 64],
+  instant: [1, 1, 1, 64],
 } as const;
 export const blendModes = { local: 0, balanced: 0.15, soft: 0.3 } as const;
 export function nearestStop(value: number, stops: readonly number[]) {

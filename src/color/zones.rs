@@ -207,6 +207,12 @@ pub struct ColorProcessor {
     strict_blackout: bool,
     spatial_blend: f32,
     room_response: bool,
+    /// Opt-in: scene cuts land in one frame instead of being rate-limited by
+    /// `max_color_step`. Off by default because the limiter is also the
+    /// flash-safety guard against strobing content.
+    instant_scene_cuts: bool,
+    /// Single-channel room fixtures use the slower 1.1.0 room response.
+    gentle_room_lights: bool,
 }
 
 impl ColorProcessor {
@@ -228,7 +234,14 @@ impl ColorProcessor {
             strict_blackout: false,
             spatial_blend: 0.0,
             room_response: false,
+            instant_scene_cuts: false,
+            gentle_room_lights: true,
         }
+    }
+
+    pub fn set_latency_options(&mut self, instant_scene_cuts: bool, gentle_room_lights: bool) {
+        self.instant_scene_cuts = instant_scene_cuts;
+        self.gentle_room_lights = gentle_room_lights;
     }
 
     pub fn set_spatial_blend(&mut self, strength: f32) {
@@ -374,7 +387,7 @@ impl ColorProcessor {
             elapsed_alpha(self.rise, elapsed)
         };
         let max_step = self.max_color_step as f32 * elapsed.as_secs_f32() * 30.0;
-        let next = if self.room_response && !is_scene_cut {
+        let next = if self.room_response && self.gentle_room_lights && !is_scene_cut {
             let brightness = |c: FloatColor| c.r.max(c.g).max(c.b);
             let from = brightness(current);
             let to = brightness(target);
@@ -404,7 +417,11 @@ impl ColorProcessor {
         } else {
             current.lerp(target, alpha)
         };
-        limit_color_step(current, next, max_step)
+        if is_scene_cut && self.instant_scene_cuts {
+            next
+        } else {
+            limit_color_step(current, next, max_step)
+        }
     }
 }
 
@@ -531,6 +548,11 @@ impl ZoneSampler {
 
     pub fn set_max_color_step(&mut self, step: u8) {
         self.processor.set_max_color_step(step);
+    }
+
+    pub fn set_latency_options(&mut self, instant_scene_cuts: bool, gentle_room_lights: bool) {
+        self.processor
+            .set_latency_options(instant_scene_cuts, gentle_room_lights);
     }
 
     /// Fast letterbox / pillarbox detector. Evaluates top/bottom row luminance to find black bars.
@@ -1179,6 +1201,48 @@ mod tests {
         let black = vec![0; 16];
         let (colors, _) = sampler.sample_frame(&black, 2, 2, false);
         assert_eq!(colors[0].1, RgbColor::new(0, 0, 0));
+    }
+
+    #[test]
+    fn scene_cuts_land_in_one_frame_only_when_opted_in() {
+        let mut processor = ColorProcessor::new(0.35, false, 1.0, 0.0);
+        processor.set_peak_weight(0.0);
+        let black = FloatColor::default();
+        let white = FloatColor::new(255.0, 255.0, 255.0);
+        // Default keeps the flash-safety limit on cuts.
+        let limited = processor.process(white, white, 1.0, black, true, REFERENCE_FRAME);
+        assert!((limited.r - 12.0).abs() < 0.001 && (limited.b - 12.0).abs() < 0.001);
+
+        processor.set_latency_options(true, true);
+        let cut = processor.process(white, white, 1.0, black, true, REFERENCE_FRAME);
+        assert_eq!(cut, white, "opted in: a cut is not rate-limited");
+
+        // Gradual changes keep the step limit either way.
+        processor.set_latency_options(true, true);
+        let gradual = processor.process(white, white, 1.0, black, false, REFERENCE_FRAME);
+        assert!(gradual.r <= 12.0 + 0.001);
+    }
+
+    #[test]
+    fn room_fixtures_match_edge_response_when_gentle_lights_are_off() {
+        let mut edge = ColorProcessor::new(0.35, false, 1.0, 0.0);
+        edge.set_peak_weight(0.0);
+        edge.set_max_color_step(255);
+        let current = FloatColor::new(100.0, 100.0, 100.0);
+        let target = FloatColor::new(200.0, 0.0, 0.0);
+        let edge_next = edge.process(target, target, 1.0, current, false, REFERENCE_FRAME);
+
+        let gentle = edge.for_room();
+        let gentle_next = gentle.process(target, target, 1.0, current, false, REFERENCE_FRAME);
+        assert_ne!(
+            gentle_next, edge_next,
+            "default keeps the slower room response"
+        );
+
+        edge.set_latency_options(false, false);
+        let fast_room = edge.for_room();
+        let fast_next = fast_room.process(target, target, 1.0, current, false, REFERENCE_FRAME);
+        assert_eq!(fast_next, edge_next);
     }
 
     #[test]
