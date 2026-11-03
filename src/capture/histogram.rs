@@ -250,13 +250,43 @@ impl HistogramCapture {
         // calibrated on webOS 24/25 hardware. If this device reports a
         // different fixed total per zone, the layout constants would be wrong
         // for it — fail here so create_capture falls back to another backend.
-        if !capture.read_histograms() {
-            return Err(anyhow!(
-                "histogram probe read failed on {}",
-                DEVICE_PATH_PUBLIC
-            ));
+        // The first refresh after START can be partial (~5400 of 7200 samples in
+        // zone 0), so give the engine up to ~200 ms to settle before judging it.
+        let mut layout = Err(anyhow!(
+            "histogram probe read failed on {}",
+            DEVICE_PATH_PUBLIC
+        ));
+        for attempt in 0..10 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if !capture.read_histograms() {
+                continue;
+            }
+            if preset == 3 {
+                // Experimental: the library's preset table gives 14 zones here. Our
+                // 16-zone geometry does not match, so colours are spatially wrong;
+                // this exists only to measure the preset's refresh rate.
+                let live = capture.last_totals.iter().filter(|t| t[0] > 0).count();
+                tracing::warn!(
+                    "[!] Histogram preset 3 (experimental): {live} zones report samples; \
+                     zone geometry is uncalibrated, colours will be misplaced."
+                );
+                return Ok(capture);
+            }
+            layout = capture.check_layout();
+            if layout.is_ok() {
+                break;
+            }
         }
-        for (z, totals) in capture.last_totals.iter().enumerate() {
+        layout?;
+        info!("[+] Histogram layout verified (16 zones, sample counts match calibration).");
+        Ok(capture)
+    }
+
+    /// Sample counts per zone must match the calibrated 16-zone layout.
+    fn check_layout(&self) -> Result<()> {
+        for (z, totals) in self.last_totals.iter().enumerate() {
             let expected = ZONE_SAMPLES[z];
             let measured = totals[0];
             if expected == 0 || measured == 0 {
@@ -267,13 +297,13 @@ impl HistogramCapture {
             let drift = (measured as f32 - expected as f32).abs() / expected as f32;
             if drift > 0.05 {
                 return Err(anyhow!(
-                    "histogram zone {z} sample count {measured} deviates {drift:.0}% \
-                     from calibrated {expected}; unknown histogram layout"
+                    "histogram zone {z} sample count {measured} deviates {:.0}% \
+                     from calibrated {expected}; unknown histogram layout",
+                    drift * 100.0
                 ));
             }
         }
-        info!("[+] Histogram layout verified (16 zones, sample counts match calibration).");
-        Ok(capture)
+        Ok(())
     }
 
     const FRAME_W: u32 = 4;
@@ -604,6 +634,22 @@ mod tests {
         let zeroed = vec![0u8; ZONES * RECORD_SIZE];
         assert!(!decode(&mut capture, &zeroed));
         assert_eq!(capture.zone_colors[0][2], (100.0 / WHITE_RESPONSE) as u8);
+    }
+
+    #[test]
+    fn layout_check_accepts_calibration_and_reports_drift_in_percent() {
+        let mut capture = test_capture();
+        for (z, totals) in capture.last_totals.iter_mut().enumerate() {
+            *totals = [ZONE_SAMPLES[z]; 3];
+        }
+        assert!(capture.check_layout().is_ok());
+        // A partial first refresh after START, as seen on the C5.
+        capture.last_totals[0] = [5400; 3];
+        let error = capture.check_layout().unwrap_err().to_string();
+        assert!(error.contains("deviates 25%"), "{error}");
+        capture.last_totals[0] = [ZONE_SAMPLES[0]; 3];
+        capture.last_totals[14] = [0; 3];
+        assert!(capture.check_layout().is_err());
     }
 
     #[test]
