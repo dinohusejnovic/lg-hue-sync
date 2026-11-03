@@ -23,6 +23,7 @@
 
 use std::fs::OpenOptions;
 use std::os::unix::io::RawFd;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
@@ -31,6 +32,53 @@ use tracing::info;
 use super::{CaptureError, CapturedFrame, ScreenCapture};
 
 const DEVICE_PATH: &str = "/dev/video60";
+
+/// Monotonic counters for live timing diagnostics (`/api/status` → `histogram_counters`).
+/// Diff two readings to get rates; they cost one relaxed atomic add per frame.
+pub static FRAME_REQUESTS: AtomicU64 = AtomicU64::new(0);
+pub static READS: AtomicU64 = AtomicU64::new(0);
+pub static CHANGED_READS: AtomicU64 = AtomicU64::new(0);
+pub static FAILED_READS: AtomicU64 = AtomicU64::new(0);
+pub static READ_NS_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static READ_NS_MAX: AtomicU64 = AtomicU64::new(0);
+
+/// One histogram read for `/api/histogram/trace`: microseconds since the
+/// backend started, mean luma of the 16 zones, and whether any raw payload
+/// byte changed since the previous read (the hardware's true update cadence).
+#[derive(Clone, Copy, serde::Serialize, utoipa::ToSchema)]
+pub struct TraceEntry {
+    pub t_us: u64,
+    pub luma: u8,
+    pub raw_changed: bool,
+}
+
+const TRACE_LEN: usize = 300;
+pub static TRACE: std::sync::Mutex<std::collections::VecDeque<TraceEntry>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+static RAW_PAYLOAD_HASH: AtomicU64 = AtomicU64::new(0);
+
+fn trace_read(payload: &[u8], zone_colors: &[[u8; 4]; ZONES], epoch: Instant) {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    payload.hash(&mut hasher);
+    let hash = hasher.finish();
+    let raw_changed = RAW_PAYLOAD_HASH.swap(hash, Ordering::Relaxed) != hash;
+    let luma = (zone_colors
+        .iter()
+        .map(|c| (c[0] as u32 + c[1] as u32 + c[2] as u32) / 3)
+        .sum::<u32>()
+        / ZONES as u32) as u8;
+    if let Ok(mut trace) = TRACE.lock() {
+        if trace.len() == TRACE_LEN {
+            trace.pop_front();
+        }
+        trace.push_back(TraceEntry {
+            t_us: epoch.elapsed().as_micros() as u64,
+            luma,
+            raw_changed,
+        });
+    }
+}
 /// Public path used in log messages (same device).
 pub const DEVICE_PATH_PUBLIC: &str = DEVICE_PATH;
 const ZONES: usize = 16;
@@ -120,6 +168,7 @@ pub struct HistogramCapture {
     /// Per-plane bin totals from the last read; used for the layout probe.
     last_totals: [[u32; 3]; ZONES],
     empty_reads: u32,
+    epoch: Instant,
 }
 
 impl HistogramCapture {
@@ -150,13 +199,15 @@ impl HistogramCapture {
             frame: vec![0; Self::FRAME_W as usize * Self::FRAME_H as usize * 4],
             started: false,
             last_read: Instant::now() - Duration::from_secs(1),
-            // The histogram hardware reflects each video frame immediately
-            // (verified on-device: one read apart shows a full-screen flip),
-            // so poll at video rate instead of throttling capture.
-            read_interval: Duration::from_millis(16), // ~60 Hz histogram refresh
+            // Measured on the C5 (webOS 10.3.1): the histogram engine refreshes
+            // about every 100 ms (~10 Hz; see /api/histogram/trace). Polling at
+            // ~60 Hz does not raise that rate, but picks each refresh up within
+            // one 16 ms tick, which keeps added latency minimal.
+            read_interval: Duration::from_millis(16),
             zone_colors: [[0, 0, 0, 255]; ZONES],
             last_totals: [[0; 3]; ZONES],
             empty_reads: 0,
+            epoch: Instant::now(),
         };
         capture.start().context("start histogram capture")?;
         // Layout probe: the zone geometry and sample-count constants were
@@ -257,7 +308,11 @@ impl HistogramCapture {
         if ret < 0 {
             return false;
         }
-        self.decode_payload(&payload)
+        let ok = self.decode_payload(&payload);
+        if ok {
+            trace_read(&payload, &self.zone_colors, self.epoch);
+        }
+        ok
     }
 
     /// Converts 16 zone records into per-zone BGRA colors. Each record is a
@@ -353,11 +408,23 @@ impl ScreenCapture for HistogramCapture {
                 reason: "histogram stream stopped",
             });
         }
+        FRAME_REQUESTS.fetch_add(1, Ordering::Relaxed);
         // Throttle reads to the histogram refresh cadence.
         if self.last_read.elapsed() >= self.read_interval {
-            if self.read_histograms() {
+            let before = self.zone_colors;
+            let started = Instant::now();
+            let ok = self.read_histograms();
+            let nanos = started.elapsed().as_nanos() as u64;
+            READ_NS_TOTAL.fetch_add(nanos, Ordering::Relaxed);
+            READ_NS_MAX.fetch_max(nanos, Ordering::Relaxed);
+            if ok {
+                READS.fetch_add(1, Ordering::Relaxed);
+                if self.zone_colors != before {
+                    CHANGED_READS.fetch_add(1, Ordering::Relaxed);
+                }
                 self.empty_reads = 0;
             } else {
+                FAILED_READS.fetch_add(1, Ordering::Relaxed);
                 self.empty_reads = self.empty_reads.saturating_add(1);
             }
             self.last_read = Instant::now();
@@ -422,6 +489,7 @@ mod tests {
             zone_colors: [[0, 0, 0, 255]; ZONES],
             last_totals: [[0; 3]; ZONES],
             empty_reads: 0,
+            epoch: Instant::now(),
         }
     }
 

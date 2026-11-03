@@ -627,6 +627,33 @@ struct StatusResponse {
     hue_colors: Vec<(u8, RgbColor)>,
     hue_zones: Vec<LightZone>,
     calibration_pattern: Option<&'static str>,
+    histogram_counters: HistogramCounters,
+}
+
+/// Monotonic VtHistogram counters; diff two readings for rates.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+struct HistogramCounters {
+    frame_requests: u64,
+    reads: u64,
+    changed_reads: u64,
+    failed_reads: u64,
+    read_ns_total: u64,
+    read_ns_max: u64,
+}
+
+impl HistogramCounters {
+    fn now() -> Self {
+        use crate::capture::histogram as h;
+        let get = |c: &std::sync::atomic::AtomicU64| c.load(Ordering::Relaxed);
+        Self {
+            frame_requests: get(&h::FRAME_REQUESTS),
+            reads: get(&h::READS),
+            changed_reads: get(&h::CHANGED_READS),
+            failed_reads: get(&h::FAILED_READS),
+            read_ns_total: get(&h::READ_NS_TOTAL),
+            read_ns_max: get(&h::READ_NS_MAX),
+        }
+    }
 }
 
 #[derive(Serialize, ToSchema)]
@@ -745,6 +772,7 @@ pub async fn start_web_server(
 fn build_router(state: AppState) -> anyhow::Result<Router> {
     let (router, mut document) = OpenApiRouter::<AppState>::new()
         .routes(routes!(status))
+        .routes(routes!(histogram_trace))
         .routes(routes!(display_status))
         .routes(routes!(display_control))
         .routes(routes!(preview_frame))
@@ -1019,7 +1047,16 @@ async fn status(State(state): State<AppState>) -> Json<StatusResponse> {
             .read()
             .unwrap()
             .map(CalibrationPattern::name),
+        histogram_counters: HistogramCounters::now(),
     })
+}
+
+/// Last ~300 VtHistogram reads (timestamp, mean zone luma, raw-change flag) for timing diagnostics.
+#[utoipa::path(get, path = "/api/histogram/trace", tag = "LG Hue Sync",
+    responses((status = 200, body = Vec<crate::capture::histogram::TraceEntry>)))]
+async fn histogram_trace() -> Json<Vec<crate::capture::histogram::TraceEntry>> {
+    let trace = crate::capture::histogram::TRACE.lock().unwrap();
+    Json(trace.iter().copied().collect())
 }
 
 /// Save and apply the Bonjour discovery preference without restarting the daemon.
@@ -2010,9 +2047,10 @@ mod tests {
         let document: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         assert_eq!(document["info"]["version"], env!("CARGO_PKG_VERSION"));
         let paths = document["paths"].as_object().unwrap();
-        assert_eq!(paths.len(), 21);
+        assert_eq!(paths.len(), 22);
         for (path, method) in [
             ("/api/status", "get"),
+            ("/api/histogram/trace", "get"),
             ("/api/display", "get"),
             ("/api/display/{action}", "post"),
             ("/api/preview/frame", "get"),
