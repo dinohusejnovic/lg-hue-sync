@@ -253,6 +253,8 @@ Root SSH must already work; rooting is a separate owner action.
 
 The script installs the binary, Luna permissions, service unit, boot hook, and launcher package. It does not upload `config.json` unless `--with-config` is supplied explicitly.
 
+Boot order: the webOS Brew hook only installs the unit and queues a non-blocking start. The unit's `ExecStartPre` runs `boot-wait.sh`, which, within 120 s of boot, waits (up to 90 s) for a foreground app and a further 10 s, so Home loads before sync starts. `provision_luna.sh local` then rescans the Luna hub only when the permission files changed. Restarts later than 120 s after boot start immediately.
+
 ### Ares transfer tools
 
 The official Rust rewrite is [`webosbrew/ares-cli-rs`](https://github.com/webosbrew/ares-cli-rs). This workstation keeps Node commands unchanged and exposes the verified Rust v0.7.0 binaries as `ares-rs-*` aliases. Upstream shares the OSE registry, but LG's Node TV CLI uses a separate `~/.webos/tv` registry here, so `lgc1` is registered in both.

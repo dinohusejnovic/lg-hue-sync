@@ -84,7 +84,8 @@ fi
 # 3. Upload and execute Luna Service 2 provisioning script
 echo "[*] Uploading provision_luna.sh to TV..."
 scp $SCP_OPTS "$(dirname "$0")/provision_luna.sh" root@"$TV_IP":"$REMOTE_DIR/provision_luna.sh"
-ssh $SSH_OPTS root@"$TV_IP" "chmod +x $REMOTE_DIR/provision_luna.sh"
+scp $SCP_OPTS "$(dirname "$0")/boot-wait.sh" root@"$TV_IP":"$REMOTE_DIR/boot-wait.sh"
+ssh $SSH_OPTS root@"$TV_IP" "chmod +x $REMOTE_DIR/provision_luna.sh $REMOTE_DIR/boot-wait.sh"
 
 echo "[*] Provisioning Luna permissions for org.webosbrew.lg-hue-sync on TV..."
 ssh $SSH_OPTS root@"$TV_IP" "$REMOTE_DIR/provision_luna.sh local"
@@ -110,6 +111,9 @@ Conflicts=sleep.target suspend.target
 Type=simple
 WorkingDirectory=/var/home/root/lg-hue-sync
 ExecStart=/bin/sh -c 'exec /var/home/root/lg-hue-sync/lg-hue-sync run --config /var/home/root/lg-hue-sync/config.json >> /var/home/root/lg-hue-sync/daemon.log 2>&1'
+ExecStartPre=-/bin/sh /var/home/root/lg-hue-sync/boot-wait.sh
+ExecStartPre=-/var/home/root/lg-hue-sync/provision_luna.sh local
+TimeoutStartSec=150
 Restart=always
 RestartSec=5
 TimeoutStopSec=3
@@ -121,15 +125,12 @@ EOF
 mkdir -p /var/lib/webosbrew/init.d
 cat << 'EOF' > /var/lib/webosbrew/init.d/50-lg-hue-sync
 #!/bin/sh
-if [ -x /var/home/root/lg-hue-sync/provision_luna.sh ]; then
-    /var/home/root/lg-hue-sync/provision_luna.sh local || true
-fi
+# Hand the start to systemd without blocking: the unit's ExecStartPre waits for
+# the TV to finish booting, then provisions Luna, before the daemon runs.
 mkdir -p /run/systemd/system
 cp -f /var/home/root/lg-hue-sync/lg-hue-sync.service /run/systemd/system/lg-hue-sync.service
 systemctl daemon-reload
-systemctl stop lg-hue-sync 2>/dev/null || true
-sleep 2
-systemctl start lg-hue-sync
+systemctl restart --no-block lg-hue-sync
 EOF
 chmod +x /var/lib/webosbrew/init.d/50-lg-hue-sync
 

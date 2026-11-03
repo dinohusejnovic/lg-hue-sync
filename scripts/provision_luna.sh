@@ -17,7 +17,17 @@ provision_files() {
     mkdir -p /var/luna-service2-dev/manifests.d /var/luna-service2-dev/roles.d /var/luna-service2-dev/client-permissions.d
 
     # 1. Manifests
-    cat << 'JSON' > /var/luna-service2/manifests.d/org.webosbrew.lg-hue-sync.json
+    # Stage, then install only changed files: an unconditional hub rescan on
+    # every boot competes with the TV's own startup.
+    STAGE=$(mktemp -d)
+    CHANGED=0
+    put() {
+        if ! cmp -s "$1" "$2"; then
+            cp -f "$1" "$2"
+            CHANGED=1
+        fi
+    }
+    cat << 'JSON' > "$STAGE/manifest.json"
 {
     "id": "org.webosbrew.lg-hue-sync",
     "version": "1.0.0",
@@ -32,7 +42,7 @@ provision_files() {
 }
 JSON
 
-    cat << 'JSON' > /var/luna-service2-dev/manifests.d/org.webosbrew.lg-hue-sync.json
+    cat << 'JSON' > "$STAGE/manifest-dev.json"
 {
     "id": "org.webosbrew.lg-hue-sync",
     "version": "1.0.0",
@@ -48,7 +58,7 @@ JSON
 JSON
 
     # 2. Privileged Role Files (without appId)
-    cat << 'JSON' > /tmp/org.webosbrew.lg-hue-sync.role.json
+    cat << 'JSON' > "$STAGE/role.json"
 {
     "exeName": "/var/home/root/lg-hue-sync/lg-hue-sync",
     "type": "privileged",
@@ -88,12 +98,13 @@ JSON
     ]
 }
 JSON
-    cp -f /tmp/org.webosbrew.lg-hue-sync.role.json /var/luna-service2/roles.d/org.webosbrew.lg-hue-sync.json
-    cp -f /tmp/org.webosbrew.lg-hue-sync.role.json /var/luna-service2-dev/roles.d/org.webosbrew.lg-hue-sync.json
-    rm -f /tmp/org.webosbrew.lg-hue-sync.role.json
+    put "$STAGE/manifest.json" /var/luna-service2/manifests.d/org.webosbrew.lg-hue-sync.json
+    put "$STAGE/manifest-dev.json" /var/luna-service2-dev/manifests.d/org.webosbrew.lg-hue-sync.json
+    put "$STAGE/role.json" /var/luna-service2/roles.d/org.webosbrew.lg-hue-sync.json
+    put "$STAGE/role.json" /var/luna-service2-dev/roles.d/org.webosbrew.lg-hue-sync.json
 
     # 3. Client Permissions
-    cat << 'JSON' > /tmp/org.webosbrew.lg-hue-sync.perm.json
+    cat << 'JSON' > "$STAGE/perm.json"
 {
     "org.webosbrew.lg-hue-sync*": [
         "all"
@@ -112,12 +123,16 @@ JSON
     ]
 }
 JSON
-    cp -f /tmp/org.webosbrew.lg-hue-sync.perm.json /var/luna-service2/client-permissions.d/org.webosbrew.lg-hue-sync.json
-    cp -f /tmp/org.webosbrew.lg-hue-sync.perm.json /var/luna-service2-dev/client-permissions.d/org.webosbrew.lg-hue-sync.json
-    rm -f /tmp/org.webosbrew.lg-hue-sync.perm.json
+    put "$STAGE/perm.json" /var/luna-service2/client-permissions.d/org.webosbrew.lg-hue-sync.json
+    put "$STAGE/perm.json" /var/luna-service2-dev/client-permissions.d/org.webosbrew.lg-hue-sync.json
 
-    ls-control scan-services
-    echo "[+] Luna permissions provisioned and scanned successfully."
+    rm -rf "$STAGE"
+    if [ "$CHANGED" = 1 ]; then
+        ls-control scan-services
+        echo "[+] Luna permissions provisioned and scanned successfully."
+    else
+        echo "[+] Luna permissions already current; no rescan needed."
+    fi
 }
 
 if [ "$TV_IP" = "local" ] || [ "$TV_IP" = "localhost" ] || [ "$TV_IP" = "127.0.0.1" ]; then
