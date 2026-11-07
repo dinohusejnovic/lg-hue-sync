@@ -21,9 +21,13 @@ OnBootSec=1min
 OnUnitActiveSec=1min
 AccuracySec=5s
 UNIT
+    rm -f /var/lib/webosbrew/init.d/55-lg-hue-sync-log
     cat > /var/lib/webosbrew/init.d/55-lg-hue-sync-log <<'BOOT'
 #!/bin/sh
 set -eu
+# Nothing to trim once the service is uninstalled (a Homebrew Channel install's
+# 50-lg-hue-sync link leads nowhere after the app is removed).
+[ -e /var/lib/webosbrew/init.d/50-lg-hue-sync ] || exit 0
 install_dir=/var/home/root/lg-hue-sync
 mkdir -p /run/systemd/system
 cp "$install_dir/lg-hue-sync-log.service" /run/systemd/system/

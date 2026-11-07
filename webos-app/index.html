@@ -104,60 +104,121 @@
   </div>
   <div class="spinner" id="spinner"></div>
   <h1>Hue &amp; Nanoleaf Sync</h1>
-  <p>Connecting to local ambient lighting service...</p>
-  <div class="status-msg" id="status">Checking port 8088...</div>
+  <p id="lead">Starting the lighting service&hellip;</p>
+  <div class="status-msg" id="status">Starting&hellip;</div>
 
   <div class="error-box" id="errorBox">
-    Service not responding on port 8088. Please verify <code>lg-hue-sync.service</code> is running.
+    <span id="errorText">The lighting service is not answering.</span>
     <br>
-    <button id="retryBtn" onclick="retryConnection()">Retry Now</button>
+    <button id="retryBtn">Try again</button>
   </div>
 
   <script>
-    const TARGET = "http://127.0.0.1:8088/?tv=1";
-    let attempts = 0;
-    const maxAttempts = 15;
+    /*
+     * The app as the Homebrew Channel installs it carries the lighting service
+     * (payload/). Each launch asks the Homebrew Channel, which runs as root, to
+     * install or update it from there and make sure it runs, then opens the
+     * dashboard. A launcher installed without the service (scripts/deploy.sh)
+     * skips that step. ES5 only: the Homebrew Channel's compatibility check
+     * reads ES2015 syntax as needing a newer webOS.
+     */
+    (function () {
+      var DASHBOARD = "http://127.0.0.1:8088/?tv=1";
+      var STATUS = "http://127.0.0.1:8088/api/status";
+      var EXEC = "luna://org.webosbrew.hbchannel.service/exec";
+      var appDir = decodeURIComponent(location.pathname.replace(/\/[^\/]*$/, ""));
+      var busy = false;
 
-    async function checkService() {
-      attempts++;
-      try {
-        const res = await fetch("http://127.0.0.1:8088/api/status", { cache: "no-store" });
-        if (res.ok) {
-          document.getElementById("status").textContent = "Service active! Loading UI...";
-          window.location.replace(TARGET);
-          return;
+      function el(id) { return document.getElementById(id); }
+      function say(text) { el("status").textContent = text; }
+      function stuck(text) {
+        busy = false;
+        el("spinner").style.display = "none";
+        el("status").style.display = "none";
+        el("errorText").textContent = text;
+        el("errorBox").style.display = "block";
+        el("retryBtn").focus();
+      }
+
+      // Runs payload/install.sh as root. cb(result): the script's JSON line,
+      // null when this app carries no service or there is no Homebrew Channel.
+      function setup(cb) {
+        var bridge;
+        try { bridge = new PalmServiceBridge(); } catch (e) { bridge = null; }
+        if (!bridge) return cb(null);
+        var finished = false;
+        var timer = setTimeout(function () {
+          if (!finished) { finished = true; cb({ ok: false, error: "setup did not finish" }); }
+        }, 120000);
+        bridge.onservicecallback = function (msg) {
+          if (finished) return;
+          finished = true;
+          clearTimeout(timer);
+          var reply = {}, result = null;
+          try { reply = JSON.parse(msg); } catch (e) { reply = {}; }
+          var lines = String(reply.stdoutString || "").replace(/\s+$/, "").split("\n");
+          try { result = JSON.parse(lines[lines.length - 1]); } catch (e) { result = null; }
+          cb(result && typeof result.ok === "boolean" ? result : null);
+        };
+        bridge.call(EXEC, JSON.stringify({ command: 'sh "' + appDir + '/payload/install.sh"' }));
+      }
+
+      // Waits for the service to answer, for up to `tries` seconds.
+      function waitForService(tries, cb) {
+        var xhr = new XMLHttpRequest(), done = false;
+        function end(ok) {
+          if (done) return;
+          done = true;
+          if (ok) return cb(true);
+          if (tries <= 1) return cb(false);
+          setTimeout(function () { waitForService(tries - 1, cb); }, 1000);
         }
-      } catch (err) {
-        // daemon still starting up
+        try {
+          xhr.open("GET", STATUS + "?t=" + Date.now(), true);
+          xhr.timeout = 1500;
+          xhr.onreadystatechange = function () {
+            if (xhr.readyState === 4) end(xhr.status >= 200 && xhr.status < 300);
+          };
+          xhr.onerror = function () { end(false); };
+          xhr.ontimeout = function () { end(false); };
+          xhr.send();
+        } catch (e) { end(false); }
       }
 
-      if (attempts >= maxAttempts) {
-        document.getElementById("spinner").style.display = "none";
-        document.getElementById("status").style.display = "none";
-        document.getElementById("errorBox").style.display = "block";
-        document.getElementById("retryBtn").focus();
-      } else {
-        document.getElementById("status").textContent = "Connecting... (attempt " + attempts + "/" + maxAttempts + ")";
-        setTimeout(checkService, 600);
+      function start() {
+        if (busy) return;
+        busy = true;
+        el("errorBox").style.display = "none";
+        el("spinner").style.display = "block";
+        el("status").style.display = "block";
+        say("Checking the lighting service…");
+        setup(function (result) {
+          if (result && !result.ok) {
+            return stuck("Setup failed: " + (result.error || "unknown error") +
+              ". Check that the Homebrew Channel is installed and the TV is rooted.");
+          }
+          if (result && (result.action === "installed" || result.action === "upgraded")) {
+            say("Starting version " + result.version + "…");
+          } else {
+            say("Connecting…");
+          }
+          // A fresh start right after the TV boots waits for Home to load.
+          waitForService(150, function (ok) {
+            if (!ok) return stuck("The lighting service did not start.");
+            say("Opening the dashboard…");
+            location.replace(DASHBOARD);
+          });
+        });
       }
-    }
 
-    function retryConnection() {
-      attempts = 0;
-      document.getElementById("spinner").style.display = "block";
-      document.getElementById("status").style.display = "block";
-      document.getElementById("errorBox").style.display = "none";
-      checkService();
-    }
-
-    // Handle webOS back button
-    window.addEventListener("keydown", function(e) {
-      if (e.keyCode === 461) { // webOS Back Key
-        window.close();
-      }
-    });
-
-    checkService();
+      el("retryBtn").addEventListener("click", function () { start(); });
+      document.addEventListener("keydown", function (e) {
+        var key = e.keyCode || e.which;
+        if (key === 13 && el("errorBox").style.display === "block") start();
+        else if (key === 461) window.close(); // Back
+      });
+      start();
+    })();
   </script>
 </body>
 </html>

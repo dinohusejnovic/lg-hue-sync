@@ -97,47 +97,16 @@ if [ -n "$IPK_PATH" ]; then
     ssh $SSH_OPTS root@"$TV_IP" "luna-send -n 1 -f luna://com.webos.appInstallService/dev/install '{\"id\":\"org.webosbrew.lg-hue-sync\", \"ipkUrl\":\"/tmp/org.webosbrew.lg-hue-sync.ipk\", \"subscribe\":false}' || true"
 fi
 
-# 5. Create persistent systemd unit & webosbrew init.d autostart hook
+# 5. Install the systemd unit and the webosbrew init.d autostart hook (shared
+# with the Homebrew Channel package: scripts/tv/).
 echo "[*] Installing persistent webosbrew autostart hook on TV..."
-ssh $SSH_OPTS root@"$TV_IP" bash << 'REMOTEEOC'
-set -e
-cat << 'EOF' > /var/home/root/lg-hue-sync/lg-hue-sync.service
-[Unit]
-Description=LG C1 Native Philips Hue & Nanoleaf Sync Daemon
-After=network.target
-Conflicts=sleep.target suspend.target
-
-[Service]
-Type=simple
-WorkingDirectory=/var/home/root/lg-hue-sync
-ExecStart=/bin/sh -c 'exec /var/home/root/lg-hue-sync/lg-hue-sync run --config /var/home/root/lg-hue-sync/config.json >> /var/home/root/lg-hue-sync/daemon.log 2>&1'
-ExecStartPre=-/bin/sh /var/home/root/lg-hue-sync/boot-wait.sh
-ExecStartPre=-/var/home/root/lg-hue-sync/provision_luna.sh local
-TimeoutStartSec=150
-Restart=always
-RestartSec=5
-TimeoutStopSec=3
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-mkdir -p /var/lib/webosbrew/init.d
-cat << 'EOF' > /var/lib/webosbrew/init.d/50-lg-hue-sync
-#!/bin/sh
-# Hand the start to systemd without blocking: the unit's ExecStartPre waits for
-# the TV to finish booting, then provisions Luna, before the daemon runs.
-mkdir -p /run/systemd/system
-cp -f /var/home/root/lg-hue-sync/lg-hue-sync.service /run/systemd/system/lg-hue-sync.service
-systemctl daemon-reload
-systemctl restart --no-block lg-hue-sync
-EOF
-chmod +x /var/lib/webosbrew/init.d/50-lg-hue-sync
-
-# Launch now
-/var/lib/webosbrew/init.d/50-lg-hue-sync
-echo "[TV] Service installed and started via systemd (/var/lib/webosbrew/init.d/50-lg-hue-sync)"
-REMOTEEOC
+scp $SCP_OPTS "$(dirname "$0")/tv/lg-hue-sync.service" "$(dirname "$0")/tv/50-lg-hue-sync.sh" root@"$TV_IP":"$REMOTE_DIR/"
+ssh $SSH_OPTS root@"$TV_IP" "set -e; mkdir -p /var/lib/webosbrew/init.d; \
+    rm -f /var/lib/webosbrew/init.d/50-lg-hue-sync; \
+    cp $REMOTE_DIR/50-lg-hue-sync.sh /var/lib/webosbrew/init.d/50-lg-hue-sync; \
+    chmod 755 /var/lib/webosbrew/init.d/50-lg-hue-sync; \
+    /var/lib/webosbrew/init.d/50-lg-hue-sync; \
+    echo '[TV] Service installed and started via systemd (/var/lib/webosbrew/init.d/50-lg-hue-sync)'"
 
 scp $SCP_OPTS "$(dirname "$0")/log-maintenance.sh" root@"$TV_IP":"$REMOTE_DIR/log-maintenance.sh"
 ssh $SSH_OPTS root@"$TV_IP" "chmod 755 $REMOTE_DIR/log-maintenance.sh && $REMOTE_DIR/log-maintenance.sh --install"

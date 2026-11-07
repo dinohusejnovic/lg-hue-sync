@@ -38,3 +38,4 @@ dejavuln_payload/
 # Dashboard toolchain outputs
 /frontend/node_modules/
 /frontend/dist/
+/dist/

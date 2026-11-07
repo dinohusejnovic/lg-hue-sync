@@ -7,10 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-07
+
 ### Added
+- Homebrew Channel package and repository: the app carries the daemon and, when opened, installs or upgrades it through the Homebrew Channel (never downgrading a newer SSH install). Its boot hook links into the app, so uninstalling the app stops the daemon starting at boot.
+- VtHistogram aggregate capture backend on webOS 24/25 (`/dev/video60`): per-zone colour statistics from the video hardware, which keeps working during DRM-protected playback.
+- Strobe boost, Dynamic response, Gentle room lights and opt-in Instant scene cuts.
 - Home Assistant MQTT discovery bridge (`mqtt` config section, `docs/home-assistant.md`); a client of the loopback API.
 - Magic Remote D-pad mode for the dashboard (`?tv=1`, automatic on webOS), opened by the launcher.
-- VtHistogram aggregate capture backend on webOS 24/25, retained across the 1.1.0 merge.
+- A manual Stop now survives restarts when Follow TV power is off; sync starts only after the TV has finished booting.
+
+### Changed
+- Merged upstream TV event subscriptions, opt-in NV12 screen streaming and Hue streaming fixes.
+- Lower light latency: histogram reads run on their own thread, sleeping while the engine cannot refresh and checking every 8 ms when a refresh is due (never later than the former 60 Hz poll); new colours wake the sync loop at once, and new Hue colours no longer wait behind a keep-alive repeat. The loop rests once output has settled.
+- Dashboard help explains every option by its effect on the room.
+
+### Removed
+- The histogram preset setting: every preset refreshes at the same ~10 Hz on the C5, and preset 3 misplaces colours.
+
+### Fixed
+- A stale "Failed to fetch" banner after changing the Hue Entertainment Area (the daemon restarts by design); connection errors now clear once the TV answers again.
 
 ## [1.1.0] - 2026-11-03
 

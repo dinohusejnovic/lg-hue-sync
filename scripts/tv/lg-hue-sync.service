@@ -1,0 +1,18 @@
+[Unit]
+Description=LG Hue Sync: Philips Hue & Nanoleaf screen sync
+After=network.target
+Conflicts=sleep.target suspend.target
+
+[Service]
+Type=simple
+WorkingDirectory=/var/home/root/lg-hue-sync
+ExecStart=/bin/sh -c 'exec /var/home/root/lg-hue-sync/lg-hue-sync run --config /var/home/root/lg-hue-sync/config.json >> /var/home/root/lg-hue-sync/daemon.log 2>&1'
+ExecStartPre=-/bin/sh /var/home/root/lg-hue-sync/boot-wait.sh
+ExecStartPre=-/var/home/root/lg-hue-sync/provision_luna.sh local
+TimeoutStartSec=150
+Restart=always
+RestartSec=5
+TimeoutStopSec=3
+
+[Install]
+WantedBy=multi-user.target

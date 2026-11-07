@@ -78,4 +78,10 @@ jobs:
             found { print }
           ' CHANGELOG.md > release-notes.md
           test -s release-notes.md
-          gh release create "${GITHUB_REF_NAME}" release/* --verify-tag --title "LG Hue Sync ${GITHUB_REF_NAME}" --notes-file release-notes.md
+          # scripts/publish_hbc.sh may have published this tag already, with the
+          # Homebrew Channel package built from the same daemon: leave it intact.
+          if gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1; then
+            echo "Release ${GITHUB_REF_NAME} already exists; not replacing its assets."
+          else
+            gh release create "${GITHUB_REF_NAME}" release/* --verify-tag --title "LG Hue Sync ${GITHUB_REF_NAME}" --notes-file release-notes.md
+          fi

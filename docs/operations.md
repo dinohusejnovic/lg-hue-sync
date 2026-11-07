@@ -301,7 +301,9 @@ only the launcher: it does not provision, update or uninstall the daemon.
 Existing IP-based deployment retains SSH/Luna for root service ownership,
 configuration preservation and rollback. Full deployment packages locally before
 any TV mutation. Do not publish the launcher-only IPK or its generated manifest
-as a complete daemon installer.
+as a complete daemon installer: the Homebrew Channel package that carries and
+installs the daemon is built by `scripts/build_hbc_package.py` and published by
+`scripts/publish_hbc.sh` (see [releasing.md](releasing.md)).
 
 ## Safe binary update
 

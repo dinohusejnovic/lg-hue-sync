@@ -38,7 +38,7 @@ Rust daemon and LAN dashboard for screen-derived Philips Hue Entertainment and N
 
 - Reject changes that expose credentials, device addresses, certificate pins, or populated configuration.
 - Require host checks for all code changes and the ARMv7 target build for runtime, dependency, or packaging changes.
-- Do not publish the launcher-only IPK or Homebrew manifest until the package owns safe install, upgrade, and uninstall of the daemon and service lifecycle.
+- Publish to the Homebrew Channel only the full package from `scripts/build_hbc_package.py` (app + daemon payload + `scripts/tv/hbc-install.sh`), through `scripts/publish_hbc.sh`. Never publish the launcher-only IPK from `make package-app` or its manifest. The unit and boot hook in `scripts/tv/` are shared by `deploy.sh` and the package; change them in one place.
 
 ## Detailed guidance
 
