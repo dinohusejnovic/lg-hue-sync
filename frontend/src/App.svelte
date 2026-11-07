@@ -25,6 +25,7 @@
   import InstallApp from './lib/InstallApp.svelte';
   import BlackFrameSettings from './lib/BlackFrameSettings.svelte';
   import Diagnostics from './lib/Diagnostics.svelte';
+  import Streaming from './lib/Streaming.svelte';
   import { vibrate } from './lib/haptics';
   import { registerAgentTools } from './lib/agent-tools';
   import { detectTv, installTvNavigation } from './lib/tv';
@@ -98,6 +99,7 @@
   const tabs = [
     ['tuning', 'Tuning'],
     ['devices', 'Devices'],
+    ['streaming', 'Streaming'],
     ['diagnostics', 'Diagnostics'],
   ];
   const demo = import.meta.env.DEV;
@@ -464,5 +466,13 @@
     hidden={tab !== 'diagnostics'}
   >
     <Diagnostics status={model.status} receivedAt={model.receivedAt} online={model.online} {now} />
+  </div>
+  <div
+    id="panel-streaming"
+    role="tabpanel"
+    aria-labelledby="tab-streaming"
+    hidden={tab !== 'streaming'}
+  >
+    <Streaming active={tab === 'streaming'} />
   </div>
 </main>

@@ -33,6 +33,7 @@ mdns-sd = { version = "0.21.6", default-features = false, features = ["async"] }
 utoipa = { version = "6", features = ["axum_extras"] }
 utoipa-axum = "0.3"
 rumqttc = { version = "0.25.1", default-features = false }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
 
 [profile.release]
 opt-level = 3

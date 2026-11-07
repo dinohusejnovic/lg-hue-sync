@@ -41,7 +41,7 @@ pub fn compatible_for(source: CaptureSource, app_sources: bool) -> Option<bool> 
     }
 }
 
-fn parse_source(value: &Value) -> CaptureSource {
+pub(crate) fn parse_source(value: &Value) -> CaptureSource {
     if value["returnValue"] != true {
         return CaptureSource::Unknown;
     }

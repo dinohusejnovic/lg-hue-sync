@@ -2,6 +2,7 @@ mod capture;
 mod capture_source;
 mod color;
 mod config;
+mod frame_stream;
 mod hue;
 mod local_http;
 mod luna;
@@ -9,6 +10,7 @@ mod mqtt;
 mod nanoleaf;
 mod runtime;
 mod setup;
+mod tv_events;
 mod tv_power;
 mod video_mode;
 mod web;
@@ -757,6 +759,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         .capture_hardware
         .store(capture.is_real_hardware(), Ordering::Relaxed);
 
+    let mut tv_events = tv_events::TvEvents::start(shutdown.clone());
     let web_shutdown = CancellationToken::new();
     let web_tasks = match start_web_server(
         8088,
@@ -797,6 +800,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let mut auto_tv_power = config.auto_tv_power;
 
     let mut last_channels: Vec<(u8, (u16, u16, u16))> = Vec::new();
+    let mut last_channels_use_xy = current_use_xy;
     let mut last_nanoleaf_colors: Vec<RgbColor> = Vec::new();
     let mut last_heartbeat = tokio::time::Instant::now();
     let mut last_nanoleaf_heartbeat = tokio::time::Instant::now();
@@ -806,11 +810,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     if !capture.is_real_hardware() {
         capture_retry.failure();
     }
+    let mut signal_hold = tv_events::SignalTransitionHold::default();
     let mut capture_recovery = CaptureRecovery::default();
     let mut capture_faulted = false;
-    let mut last_tv_power_poll = tokio::time::Instant::now() - Duration::from_secs(2);
-    let mut last_tv_power_warning = tokio::time::Instant::now() - Duration::from_secs(30);
-    let mut last_source_fps_poll = tokio::time::Instant::now();
     let mut hue_retry = RetryState::new();
     let mut nanoleaf_retry = RetryState::new();
     let mut nanoleaf_only_frame_count = 0u64;
@@ -819,7 +821,6 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         desired_running: (!pipeline_should_run).then_some(false),
         ..PendingCommands::default()
     };
-    let mut last_source_poll = tokio::time::Instant::now() - Duration::from_secs(2);
     let mut pipeline_state = if pipeline_should_run {
         PipelineState::Running
     } else {
@@ -838,14 +839,6 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     strobe.configure(config.strobe_boost, config.strobe_hz);
     let mut hue_strobe = color::strobe::StrobeColors::default();
     let mut nanoleaf_strobe = color::strobe::StrobeColors::default();
-    let probe_stop = CancellationToken::new();
-    let probe_mode = Arc::new(std::sync::atomic::AtomicU8::new(PROBE_SOURCE_AND_FPS));
-    let (source_probe, fps_probe) = spawn_luna_probe(
-        initial_source,
-        config.fps == 0,
-        probe_mode.clone(),
-        probe_stop.clone(),
-    );
 
     'sync_loop: while running.load(Ordering::SeqCst) {
         pending_commands.receive(&mut command_rx);
@@ -853,48 +846,33 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
         let loop_start = tokio::time::Instant::now();
         let mut emitted_light_update = false;
-        probe_mode.store(PROBE_SOURCE_AND_FPS, Ordering::Relaxed);
 
         watchdog.tick();
 
-        if last_source_poll.elapsed() >= Duration::from_secs(2) {
-            last_source_poll = tokio::time::Instant::now();
-            source_policy.observe(crate::capture_source::compatible_for(
-                *source_probe.borrow(),
-                app_sources_supported,
-            ));
-        }
-
-        if auto_tv_power && last_tv_power_poll.elapsed() >= Duration::from_secs(2) {
-            last_tv_power_poll = tokio::time::Instant::now();
-            match tv_power::is_active().await {
-                Ok(state @ Some(_)) => {
-                    shared_state.set_tv_power_state(state);
-                    let active = state.unwrap();
-                    let changed = observed_tv_power
-                        .map(|previous| previous != active)
-                        .unwrap_or(!active && pipeline_state == PipelineState::Running);
-                    if changed {
-                        info!(
-                            "TV power changed: {}",
-                            if active { "active" } else { "standby" }
-                        );
-                        if pending_commands.desired_running.is_none()
-                            && !source_policy.manually_stopped()
-                        {
-                            pending_commands.desired_running = Some(active);
-                        }
-                    }
-                    observed_tv_power = Some(active);
-                }
-                Ok(None) => shared_state.set_tv_power_state(None),
-                Err(error) => {
-                    shared_state.set_tv_power_state(None);
-                    if last_tv_power_warning.elapsed() >= Duration::from_secs(30) {
-                        warn!("TV power state unavailable; leaving sync unchanged: {error}");
-                        last_tv_power_warning = tokio::time::Instant::now();
+        let observation = update_tv_observation(&mut tv_events, &shared_state);
+        signal_hold.observe(observation.video.as_ref(), std::time::Instant::now());
+        source_policy.observe(crate::capture_source::compatible_for(
+            observation.source,
+            app_sources_supported,
+        ));
+        source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
+        if auto_tv_power {
+            if let Some(active) = observation.power.active {
+                let changed = observed_tv_power
+                    .map(|previous| previous != active)
+                    .unwrap_or(!active && pipeline_state == PipelineState::Running);
+                if changed {
+                    info!(
+                        "TV power changed: {}",
+                        if active { "active" } else { "standby" }
+                    );
+                    if pending_commands.desired_running.is_none()
+                        && !source_policy.manually_stopped()
+                    {
+                        pending_commands.desired_running = Some(active);
                     }
                 }
+                observed_tv_power = Some(active);
             }
         }
 
@@ -924,6 +902,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         }
 
         if hue_status.blocked {
+            last_channels.clear();
             hue_dtls = None;
             hue_reconnect.request(None);
             shared_state.hue_connected.store(false, Ordering::Relaxed);
@@ -945,6 +924,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             if !capture_faulted {
                 shared_state.set_sync_state(SyncState::Stopping, None);
             }
+            signal_hold.reset();
+            last_channels.clear();
+            last_nanoleaf_colors.clear();
             release_capture(&mut capture);
             if let Some(sampler) = &mut hue_sampler {
                 sampler.reset_black_frame();
@@ -985,29 +967,20 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             }
 
             while running.load(Ordering::SeqCst) {
-                tokio::time::sleep(watchdog.pause_poll_period()).await;
+                tokio::select! {
+                    _ = tokio::time::sleep(watchdog.pause_poll_period()) => {},
+                    _ = tv_events.changed() => {},
+                }
                 pending_commands.receive(&mut command_rx);
                 source_policy.manual_request(pending_commands.manual_running.take());
                 source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
                 watchdog.tick();
-                // A manual Stop needs no source or frame-rate polling until Start.
-                probe_mode.store(
-                    if source_policy.manually_stopped() {
-                        PROBE_IDLE
-                    } else {
-                        PROBE_SOURCE
-                    },
-                    Ordering::Relaxed,
-                );
-                if !source_policy.manually_stopped()
-                    && last_source_poll.elapsed() >= Duration::from_secs(2)
-                {
-                    last_source_poll = tokio::time::Instant::now();
-                    source_policy.observe(crate::capture_source::compatible_for(
-                        *source_probe.borrow(),
-                        app_sources_supported,
-                    ));
-                }
+                let observation = update_tv_observation(&mut tv_events, &shared_state);
+                source_policy.observe(crate::capture_source::compatible_for(
+                    observation.source,
+                    app_sources_supported,
+                ));
+                source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
                 if source_policy.source_paused()
                     && source_policy.blocked()
                     && !shared_state.display_off.load(Ordering::Relaxed)
@@ -1029,7 +1002,6 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                     auto_tv_power = configured_auto_tv_power;
                     observed_tv_power = None;
                     shared_state.set_tv_power_state(None);
-                    last_tv_power_poll = tokio::time::Instant::now() - Duration::from_secs(2);
                 }
 
                 let mut requested_running = pending_commands.desired_running.take();
@@ -1042,29 +1014,16 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 }
                 let mut start_requested =
                     requested_running == Some(true) || source_policy.auto_resume();
-                if auto_tv_power && last_tv_power_poll.elapsed() >= Duration::from_secs(2) {
-                    last_tv_power_poll = tokio::time::Instant::now();
-                    match tv_power::is_active().await {
-                        Ok(state @ Some(_)) => {
-                            shared_state.set_tv_power_state(state);
-                            let active = state.unwrap();
-                            if requested_running.is_none()
-                                && !source_policy.manually_stopped()
-                                && observed_tv_power == Some(false)
-                                && active
-                            {
-                                start_requested = true;
-                            }
-                            observed_tv_power = Some(active);
+                if auto_tv_power {
+                    if let Some(active) = observation.power.active {
+                        if requested_running.is_none()
+                            && !source_policy.manually_stopped()
+                            && observed_tv_power == Some(false)
+                            && active
+                        {
+                            start_requested = true;
                         }
-                        Ok(None) => shared_state.set_tv_power_state(None),
-                        Err(error) => {
-                            shared_state.set_tv_power_state(None);
-                            if last_tv_power_warning.elapsed() >= Duration::from_secs(30) {
-                                warn!("TV power state unavailable; leaving sync paused: {error}");
-                                last_tv_power_warning = tokio::time::Instant::now();
-                            }
-                        }
+                        observed_tv_power = Some(active);
                     }
                 }
                 let app_reactivated = if !start_requested
@@ -1184,7 +1143,6 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             if auto_tv_power != live_st.auto_tv_power {
                 auto_tv_power = live_st.auto_tv_power;
                 observed_tv_power = None;
-                last_tv_power_poll = tokio::time::Instant::now() - Duration::from_secs(2);
             }
             current_hue_brightness = live_st.brightness_multiplier * live_st.hue_output_brightness;
             current_use_xy = live_st.use_xy_gamut;
@@ -1363,6 +1321,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         }
 
         if std::mem::take(&mut pending_commands.sync_bridge) && hue_active {
+            last_channels.clear();
             hue_status.blocked = true;
             hue_status.needs_refresh = true;
             shared_state.hue_connected.store(false, Ordering::Relaxed);
@@ -1528,6 +1487,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
         // 4. Check for pipeline restart request from Web UI
         if std::mem::take(&mut pending_commands.reconfigure) {
+            signal_hold.reset();
+            last_channels.clear();
+            last_nanoleaf_colors.clear();
             info!("Device credentials saved; restarting daemon to load the new configuration.");
             break;
         }
@@ -1559,15 +1521,21 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             pending_commands.receive(&mut command_rx);
             source_policy.manual_request(pending_commands.manual_running.take());
             source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
+            let latest = update_tv_observation(&mut tv_events, &shared_state);
             source_policy.observe(crate::capture_source::compatible_for(
-                crate::capture_source::current_source().await,
+                latest.source,
                 app_sources_supported,
             ));
-            last_source_poll = tokio::time::Instant::now();
+            let power_inactive = auto_tv_power && latest.power.active == Some(false);
+            if power_inactive {
+                observed_tv_power = Some(false);
+                pending_commands.desired_running = Some(false);
+            }
             pending_commands.receive(&mut command_rx);
             source_policy.manual_request(pending_commands.manual_running.take());
             source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
             if pending_commands.capture_restart_cancelled()
+                || power_inactive
                 || source_policy.blocked()
                 || source_policy.manually_stopped()
             {
@@ -1595,12 +1563,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         }
 
         // In auto FPS mode, dynamically update cadence if TV source rate changed (e.g. film started)
-        if config.fps == 0 && last_source_fps_poll.elapsed() >= Duration::from_secs(2) {
-            last_source_fps_poll = tokio::time::Instant::now();
+        if config.fps == 0 {
             let detected = if capture.fixed_cadence() {
                 Some(60.0)
             } else {
-                *fps_probe.borrow()
+                tv_events::frame_rate(observation.video.as_ref())
             };
             if let Some(new_fps) = detected {
                 let clamped = new_fps.clamp(20.0, 60.0);
@@ -1639,6 +1606,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
         let hardware_frame = capture.is_real_hardware();
         let histogram_refreshes = capture.fixed_cadence();
+        capture.set_nv12_stream(&shared_state.nv12_stream);
+        shared_state
+            .nv12_supported
+            .store(capture.supports_nv12_stream(), Ordering::Relaxed);
         match capture.acquire_frame() {
             Ok(frame) => {
                 // Strobe boost: one cheap mean per frame, shared by both outputs.
@@ -1696,84 +1667,142 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 }
                 if hardware_frame {
                     shared_state.preview.publish(&frame);
+                    shared_state.stream_frames.publish(&frame);
                     capture_recovery.frame_received(std::time::Instant::now());
                     shared_state.set_sync_state(SyncState::Running, None);
                 }
-                let mut is_scene_cut = false;
-
-                if !hue_sync_enabled && nanoleaf_sync_enabled {
-                    nanoleaf_only_frame_count += 1;
-                    let global =
-                        frame_average(frame.data, frame.width, frame.height, frame.is_bgra);
-                    is_scene_cut =
-                        nanoleaf_only_frame_count > 1 && global.delta(nanoleaf_only_global) > 0.35;
-                    nanoleaf_only_global = global;
-                    if config.letterbox_detection
-                        && (nanoleaf_only_frame_count == 1
-                            || nanoleaf_only_frame_count.is_multiple_of(15))
+                let holding_transition = signal_hold.pending()
+                    && calibration_pattern(&shared_state).is_none()
+                    && signal_hold.hold_frame(
+                        !hardware_frame
+                            || color::black_frame::is_black_frame(
+                                frame.data,
+                                frame.width,
+                                frame.height,
+                            ),
+                        std::time::Instant::now(),
+                    );
+                if holding_transition {
+                    // Replay only this running session's output. Never feed held colours
+                    // back into sampling/smoothing history or manufacture absent channels.
+                    if hue_active
+                        && hue_sync_enabled
+                        && !hue_status.blocked
+                        && !last_channels.is_empty()
+                        && last_heartbeat.elapsed() >= Duration::from_millis(500)
                     {
-                        if let Some(ref mut sampler) = nanoleaf_sampler {
-                            sampler.set_active_rect(ZoneSampler::detect_active_rect(
+                        last_heartbeat = tokio::time::Instant::now();
+                        if let (Some(dtls), Some(builder)) =
+                            (&mut hue_dtls, &mut hue_packet_builder)
+                        {
+                            let packet = if last_channels_use_xy {
+                                builder.build_xy_packet(&last_channels)
+                            } else {
+                                builder.build_rgb_packet(&last_channels)
+                            };
+                            if dtls.send(&packet).is_ok() {
+                                emitted_light_update = true;
+                            } else {
+                                hue_dtls = None;
+                                shared_state.hue_connected.store(false, Ordering::Relaxed);
+                            }
+                        }
+                    }
+                    if nanoleaf_active
+                        && nanoleaf_sync_enabled
+                        && !last_nanoleaf_colors.is_empty()
+                        && last_nanoleaf_heartbeat.elapsed() >= Duration::from_millis(500)
+                    {
+                        last_nanoleaf_heartbeat = tokio::time::Instant::now();
+                        if let Some(streamer) = &mut nanoleaf_streamer {
+                            if last_nanoleaf_colors.len() == streamer.panel_count() {
+                                match streamer.send_frame(&last_nanoleaf_colors, 0) {
+                                    Ok(()) => emitted_light_update = true,
+                                    Err(_) => {
+                                        shared_state
+                                            .nanoleaf_connected
+                                            .store(false, Ordering::Relaxed);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    let mut is_scene_cut = false;
+
+                    if !hue_sync_enabled && nanoleaf_sync_enabled {
+                        nanoleaf_only_frame_count += 1;
+                        let global =
+                            frame_average(frame.data, frame.width, frame.height, frame.is_bgra);
+                        is_scene_cut = nanoleaf_only_frame_count > 1
+                            && global.delta(nanoleaf_only_global) > 0.35;
+                        nanoleaf_only_global = global;
+                        if config.letterbox_detection
+                            && (nanoleaf_only_frame_count == 1
+                                || nanoleaf_only_frame_count.is_multiple_of(15))
+                        {
+                            if let Some(ref mut sampler) = nanoleaf_sampler {
+                                sampler.set_active_rect(ZoneSampler::detect_active_rect(
+                                    frame.data,
+                                    frame.width,
+                                    frame.height,
+                                    frame.is_bgra,
+                                ));
+                            }
+                        }
+                    }
+
+                    // 1. Process Philips Hue entertainment zones
+                    if hue_active && hue_sync_enabled {
+                        if let (Some(ref mut sampler), Some(ref mut dtls), Some(ref mut builder)) =
+                            (&mut hue_sampler, &mut hue_dtls, &mut hue_packet_builder)
+                        {
+                            let (sampled_zones, cut) = sampler.sample_frame(
                                 frame.data,
                                 frame.width,
                                 frame.height,
                                 frame.is_bgra,
-                            ));
-                        }
-                    }
-                }
-
-                // 1. Process Philips Hue entertainment zones
-                if hue_active && hue_sync_enabled {
-                    if let (Some(ref mut sampler), Some(ref mut dtls), Some(ref mut builder)) =
-                        (&mut hue_sampler, &mut hue_dtls, &mut hue_packet_builder)
-                    {
-                        let (sampled_zones, cut) = sampler.sample_frame(
-                            frame.data,
-                            frame.width,
-                            frame.height,
-                            frame.is_bgra,
-                        );
-                        is_scene_cut = cut;
-
-                        let active_rect = sampler.active_rect();
-                        if let Some(ref mut nl_s) = nanoleaf_sampler {
-                            nl_s.set_active_rect(active_rect);
-                        }
-
-                        let calibration = calibration_pattern(&shared_state);
-                        let mut sampled_zones = calibration
-                            .map(|pattern| calibration_zone_colors(pattern, &config.zones))
-                            .unwrap_or(sampled_zones);
-                        if calibration.is_none() {
-                            hue_strobe.apply(
-                                strobe_phase,
-                                strobe_bright,
-                                sampled_zones.iter_mut().map(|(_, color)| color),
                             );
-                        }
-                        let channels: Vec<(u8, (u16, u16, u16))> = sampled_zones
-                            .iter()
-                            .map(|(channel_id, color)| {
-                                let scaled = if calibration.is_some() {
-                                    *color
-                                } else {
-                                    color.scale(current_hue_brightness)
-                                };
-                                if calibration.is_none() && current_use_xy {
-                                    (*channel_id, scaled.to_xy_u16(color::HueGamut::GamutC))
-                                } else {
-                                    (*channel_id, scaled.to_u16())
-                                }
-                            })
-                            .collect();
+                            is_scene_cut = cut;
 
-                        // Share live sampled Hue colors with Web UI
-                        *shared_state.live_hue_colors.write().unwrap() = sampled_zones;
+                            let active_rect = sampler.active_rect();
+                            if let Some(ref mut nl_s) = nanoleaf_sampler {
+                                nl_s.set_active_rect(active_rect);
+                            }
 
-                        // Adaptive deadband throttling for Hue Bridge
-                        let is_virtually_identical =
-                            if !last_channels.is_empty() && last_channels.len() == channels.len() {
+                            let calibration = calibration_pattern(&shared_state);
+                            let mut sampled_zones = calibration
+                                .map(|pattern| calibration_zone_colors(pattern, &config.zones))
+                                .unwrap_or(sampled_zones);
+                            if calibration.is_none() {
+                                hue_strobe.apply(
+                                    strobe_phase,
+                                    strobe_bright,
+                                    sampled_zones.iter_mut().map(|(_, color)| color),
+                                );
+                            }
+                            let channels: Vec<(u8, (u16, u16, u16))> = sampled_zones
+                                .iter()
+                                .map(|(channel_id, color)| {
+                                    let scaled = if calibration.is_some() {
+                                        *color
+                                    } else {
+                                        color.scale(current_hue_brightness)
+                                    };
+                                    if calibration.is_none() && current_use_xy {
+                                        (*channel_id, scaled.to_xy_u16(color::HueGamut::GamutC))
+                                    } else {
+                                        (*channel_id, scaled.to_u16())
+                                    }
+                                })
+                                .collect();
+                            // Share live sampled Hue colors with Web UI
+                            *shared_state.live_hue_colors.write().unwrap() = sampled_zones;
+
+                            // Adaptive deadband throttling for Hue Bridge
+                            let is_virtually_identical = if !last_channels.is_empty()
+                                && last_channels.len() == channels.len()
+                            {
                                 last_channels.iter().zip(&channels).all(
                                     |((left_id, (a1, a2, a3)), (right_id, (b1, b2, b3)))| {
                                         left_id == right_id
@@ -1786,131 +1815,136 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                                 false
                             };
 
-                        let should_send = if config.adaptive_throttling {
-                            if is_virtually_identical {
-                                if last_heartbeat.elapsed() >= Duration::from_millis(500) {
+                            let should_send = if config.adaptive_throttling {
+                                if is_virtually_identical {
+                                    if last_heartbeat.elapsed() >= Duration::from_millis(500) {
+                                        last_heartbeat = tokio::time::Instant::now();
+                                        true
+                                    } else {
+                                        false
+                                    }
+                                } else {
                                     last_heartbeat = tokio::time::Instant::now();
                                     true
-                                } else {
-                                    false
                                 }
                             } else {
-                                last_heartbeat = tokio::time::Instant::now();
                                 true
-                            }
-                        } else {
-                            true
-                        };
-
-                        if should_send {
-                            let packet = if calibration.is_none() && current_use_xy {
-                                builder.build_xy_packet(&channels)
-                            } else {
-                                builder.build_rgb_packet(&channels)
                             };
 
-                            if let Err(e) = dtls.send(&packet) {
-                                shared_state.hue_connected.store(false, Ordering::Relaxed);
-                                error!("Failed to send DTLS HueStream packet: {}", e);
-                                hue_dtls = None;
-                            } else {
-                                hue_retry.success();
-                                shared_state.hue_connected.store(true, Ordering::Relaxed);
-                                emitted_light_update = true;
+                            if should_send {
+                                let packet = if calibration.is_none() && current_use_xy {
+                                    builder.build_xy_packet(&channels)
+                                } else {
+                                    builder.build_rgb_packet(&channels)
+                                };
+
+                                if let Err(e) = dtls.send(&packet) {
+                                    shared_state.hue_connected.store(false, Ordering::Relaxed);
+                                    error!("Failed to send DTLS HueStream packet: {}", e);
+                                    hue_dtls = None;
+                                } else {
+                                    hue_retry.success();
+                                    shared_state.hue_connected.store(true, Ordering::Relaxed);
+                                    emitted_light_update = true;
+                                    last_channels_use_xy = calibration.is_none() && current_use_xy;
+                                    last_channels = channels;
+                                }
                             }
-                            last_channels = channels;
                         }
                     }
-                }
 
-                // 2. Process Nanoleaf 4D TV perimeter lightstrip
-                if nanoleaf_active && nanoleaf_sync_enabled {
-                    if let (Some(ref mut nl_sampler), Some(ref mut nl_streamer)) =
-                        (&mut nanoleaf_sampler, &mut nanoleaf_streamer)
-                    {
-                        let nl_colors = nl_sampler.sample_frame(
-                            frame.data,
-                            frame.width,
-                            frame.height,
-                            frame.is_bgra,
-                            is_scene_cut,
-                        );
-                        let nl_calibration = calibration_pattern(&shared_state);
-                        let mut nl_colors = nl_calibration
-                            .map(|pattern| calibration_perimeter_colors(pattern, nl_colors.len()))
-                            .unwrap_or(nl_colors);
-                        if nl_calibration.is_none() {
-                            nanoleaf_strobe.apply(
-                                strobe_phase,
-                                strobe_bright,
-                                nl_colors.iter_mut(),
+                    // 2. Process Nanoleaf 4D TV perimeter lightstrip
+                    if nanoleaf_active && nanoleaf_sync_enabled {
+                        if let (Some(ref mut nl_sampler), Some(ref mut nl_streamer)) =
+                            (&mut nanoleaf_sampler, &mut nanoleaf_streamer)
+                        {
+                            let nl_colors = nl_sampler.sample_frame(
+                                frame.data,
+                                frame.width,
+                                frame.height,
+                                frame.is_bgra,
+                                is_scene_cut,
                             );
-                        }
+                            let nl_calibration = calibration_pattern(&shared_state);
+                            let mut nl_colors = nl_calibration
+                                .map(|pattern| {
+                                    calibration_perimeter_colors(pattern, nl_colors.len())
+                                })
+                                .unwrap_or(nl_colors);
+                            if nl_calibration.is_none() {
+                                nanoleaf_strobe.apply(
+                                    strobe_phase,
+                                    strobe_bright,
+                                    nl_colors.iter_mut(),
+                                );
+                            }
 
-                        // Share live sampled Nanoleaf colors with Web UI
-                        *shared_state.live_nanoleaf_colors.write().unwrap() = nl_colors.clone();
-                        let nanoleaf_changed = colors_changed(&last_nanoleaf_colors, &nl_colors);
-                        let should_send = !config.adaptive_throttling
-                            || nanoleaf_changed
-                            || last_nanoleaf_heartbeat.elapsed() >= Duration::from_millis(500);
-                        if should_send {
-                            last_nanoleaf_heartbeat = tokio::time::Instant::now();
-                            if let Err(e) = nl_streamer.send_frame(&nl_colors, 0) {
-                                shared_state
-                                    .nanoleaf_connected
-                                    .store(false, Ordering::Relaxed);
-                                warn!(
+                            // Share live sampled Nanoleaf colors with Web UI
+                            *shared_state.live_nanoleaf_colors.write().unwrap() = nl_colors.clone();
+                            let nanoleaf_changed =
+                                colors_changed(&last_nanoleaf_colors, &nl_colors);
+                            let should_send = !config.adaptive_throttling
+                                || nanoleaf_changed
+                                || last_nanoleaf_heartbeat.elapsed() >= Duration::from_millis(500);
+                            if should_send {
+                                last_nanoleaf_heartbeat = tokio::time::Instant::now();
+                                if let Err(e) = nl_streamer.send_frame(&nl_colors, 0) {
+                                    shared_state
+                                        .nanoleaf_connected
+                                        .store(false, Ordering::Relaxed);
+                                    warn!(
                                 "Nanoleaf UDP frame send error ({}). Triggering external control refresh...",
                                 e
                             );
-                                if nanoleaf_retry.ready() {
-                                    if let Some(ref n_cfg) = config.nanoleaf {
-                                        match nanoleaf::enable_external_control(
-                                            &n_cfg.ip,
-                                            &n_cfg.auth_token,
-                                        ) {
-                                            Ok(port) => {
-                                                info!(
+                                    if nanoleaf_retry.ready() {
+                                        if let Some(ref n_cfg) = config.nanoleaf {
+                                            match nanoleaf::enable_external_control(
+                                                &n_cfg.ip,
+                                                &n_cfg.auth_token,
+                                            ) {
+                                                Ok(port) => {
+                                                    info!(
                                                 "[+] Re-enabled Nanoleaf external control on UDP port {}.",
                                                 port
                                             );
-                                                match NanoleafUdpStreamer::new(
-                                                    &n_cfg.ip,
-                                                    port,
-                                                    nl_streamer.panel_ids().to_vec(),
-                                                ) {
-                                                    Ok(new_streamer) => {
-                                                        *nl_streamer = new_streamer;
-                                                        nanoleaf_retry.success();
-                                                    }
-                                                    Err(recreate_err) => {
-                                                        let delay = nanoleaf_retry.failure();
-                                                        error!(
+                                                    match NanoleafUdpStreamer::new(
+                                                        &n_cfg.ip,
+                                                        port,
+                                                        nl_streamer.panel_ids().to_vec(),
+                                                    ) {
+                                                        Ok(new_streamer) => {
+                                                            *nl_streamer = new_streamer;
+                                                            nanoleaf_retry.success();
+                                                        }
+                                                        Err(recreate_err) => {
+                                                            let delay = nanoleaf_retry.failure();
+                                                            error!(
                                                         "Failed to recreate Nanoleaf streamer: {}. Retrying in {:.1}s.",
                                                         recreate_err,
                                                         delay.as_secs_f32()
                                                     );
+                                                        }
                                                     }
                                                 }
-                                            }
-                                            Err(ext_err) => {
-                                                let delay = nanoleaf_retry.failure();
-                                                error!(
+                                                Err(ext_err) => {
+                                                    let delay = nanoleaf_retry.failure();
+                                                    error!(
                                                 "Failed to refresh Nanoleaf external control: {}. Retrying in {:.1}s.",
                                                 ext_err,
                                                 delay.as_secs_f32()
                                             );
+                                                }
                                             }
                                         }
                                     }
+                                } else {
+                                    nanoleaf_retry.success();
+                                    shared_state
+                                        .nanoleaf_connected
+                                        .store(true, Ordering::Relaxed);
+                                    last_nanoleaf_colors = nl_colors;
+                                    emitted_light_update = true;
                                 }
-                            } else {
-                                nanoleaf_retry.success();
-                                shared_state
-                                    .nanoleaf_connected
-                                    .store(true, Ordering::Relaxed);
-                                last_nanoleaf_colors = nl_colors;
-                                emitted_light_update = true;
                             }
                         }
                     }
@@ -1950,10 +1984,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                     .capture_hardware
                     .store(false, Ordering::Relaxed);
 
-                // Clear/black out Nanoleaf during video transition
-                if let Some(ref mut ns) = nanoleaf_streamer {
-                    let black = vec![RgbColor::new(0, 0, 0); ns.panel_count()];
-                    let _ = ns.send_frame(&black, 0);
+                if !signal_hold.active(std::time::Instant::now()) {
+                    if let Some(ref mut ns) = nanoleaf_streamer {
+                        let black = vec![RgbColor::new(0, 0, 0); ns.panel_count()];
+                        let _ = ns.send_frame(&black, 0);
+                    }
                 }
 
                 if !runtime::wait_for_capture_retry(delay, &shutdown).await {
@@ -1963,15 +1998,21 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 pending_commands.receive(&mut command_rx);
                 source_policy.manual_request(pending_commands.manual_running.take());
                 source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
+                let latest = update_tv_observation(&mut tv_events, &shared_state);
                 source_policy.observe(crate::capture_source::compatible_for(
-                    crate::capture_source::current_source().await,
+                    latest.source,
                     app_sources_supported,
                 ));
-                last_source_poll = tokio::time::Instant::now();
+                let power_inactive = auto_tv_power && latest.power.active == Some(false);
+                if power_inactive {
+                    observed_tv_power = Some(false);
+                    pending_commands.desired_running = Some(false);
+                }
                 pending_commands.receive(&mut command_rx);
                 source_policy.manual_request(pending_commands.manual_running.take());
                 source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
                 if pending_commands.capture_restart_cancelled()
+                    || power_inactive
                     || source_policy.blocked()
                     || source_policy.manually_stopped()
                 {
@@ -1983,7 +2024,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
                 // Auto-adapt to new source refresh rate if enabled
                 if config.fps == 0 && !capture.fixed_cadence() {
-                    if let Some(new_fps) = detect_source_fps().await {
+                    if let Some(new_fps) = tv_events::frame_rate(
+                        update_tv_observation(&mut tv_events, &shared_state)
+                            .video
+                            .as_ref(),
+                    ) {
                         let clamped = new_fps.clamp(20.0, 60.0);
                         if (clamped - target_fps).abs() > 0.5 {
                             target_fps = clamped;
@@ -2039,7 +2084,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     signal_task.abort();
     let _ = signal_task.await;
     pending_commands.shutdown(command_rx);
-    probe_stop.cancel();
+    tv_events.close().await;
     web_shutdown.cancel();
     if let Some(task) = mqtt_task {
         let _ = tokio::time::timeout(Duration::from_secs(3), task).await;
@@ -2051,6 +2096,21 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
 
     info!("lg-hue-sync terminated cleanly.");
     Ok(())
+}
+
+fn update_tv_observation(
+    events: &mut tv_events::TvEvents,
+    shared: &SharedState,
+) -> tv_events::Snapshot {
+    let snapshot = events.snapshot();
+    shared.set_tv_power_state(snapshot.power.active);
+    if let (Some(enabled), Some(received_at)) =
+        (snapshot.power.display_enabled, snapshot.power_received_at)
+    {
+        shared.observe_display_power(enabled, received_at);
+    }
+    *shared.video_status.write().unwrap() = snapshot.video.clone();
+    snapshot
 }
 
 async fn run_test_pattern(config_path: PathBuf) -> Result<()> {
@@ -2251,44 +2311,6 @@ impl WatchdogHeartbeat {
 }
 
 /// What the background Luna probe should poll; manual Stop idles it completely.
-const PROBE_IDLE: u8 = 0;
-const PROBE_SOURCE: u8 = 1;
-const PROBE_SOURCE_AND_FPS: u8 = 2;
-
-/// Poll foreground source and (optionally) source frame rate every 2 s on a separate task.
-/// The sync loop reads the latest values; `None` frame rates keep the previous reading.
-fn spawn_luna_probe(
-    initial_source: crate::capture_source::CaptureSource,
-    poll_fps: bool,
-    mode: Arc<std::sync::atomic::AtomicU8>,
-    stop: CancellationToken,
-) -> (
-    tokio::sync::watch::Receiver<crate::capture_source::CaptureSource>,
-    tokio::sync::watch::Receiver<Option<f64>>,
-) {
-    let (source_tx, source_rx) = tokio::sync::watch::channel(initial_source);
-    let (fps_tx, fps_rx) = tokio::sync::watch::channel(None);
-    tokio::spawn(async move {
-        loop {
-            tokio::select! {
-                _ = stop.cancelled() => break,
-                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
-            }
-            let mode = mode.load(Ordering::Relaxed);
-            if mode == PROBE_IDLE {
-                continue;
-            }
-            source_tx.send_replace(crate::capture_source::current_source().await);
-            if poll_fps && mode == PROBE_SOURCE_AND_FPS {
-                if let Some(fps) = detect_source_fps().await {
-                    fps_tx.send_replace(Some(fps));
-                }
-            }
-        }
-    });
-    (source_rx, fps_rx)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -60,8 +60,8 @@ The dashboard's `/capture-patterns` page shows nominal SDR patches. Load it in t
 
 ## Compatible inputs and automatic pause
 
-The supported capture policy is HDMI-only. A bounded foreground-app observation
-checks the standard Luna `getForegroundAppInfo` interface every two seconds.
+The supported capture policy is HDMI-only. Persistent Luna subscriptions observe
+`getForegroundAppInfo`, `tvpower/power/getPowerState` and `videooutput/getStatus`.
 Known HDMI app IDs 1–4 permit capture; built-in apps (including Netflix) and Home
 release capture/output sessions and report `pipeline_state: unsupported_source`.
 The dashboard explains that it is waiting for HDMI rather than retrying the
@@ -77,10 +77,24 @@ not been canonically mapped to a DRM condition. PicCap documents limitations for
 This release does not attempt to bypass those restrictions.
 
 Source, power, dynamic-range and frame-rate observations use `src/luna.rs`:
-1.5-second deadline, 64 KiB reply limit and killed/reaped failed children. It
+1.5-second query/initial subscription deadline, 64 KiB per-reply limit and killed/reaped failed children. It
 retains piped stdin until the reply because this firmware's `luna-send` otherwise
-silently exits at EOF. Frame-rate polling is capped at once every two seconds.
+silently exits at EOF. Healthy subscriptions stay open while unchanged and do not
+poll. Failed feeds use bounded one-shot fallback and two-second reconnect delays.
+Startup and explicit display-control requests still use bounded one-shot queries.
+Automatic capture cadence uses the connected MAIN HDMI plane's reported frame rate;
+the dashboard's video snapshot shares the cached video subscription. Audio-driver,
+ARC and cached genre diagnostics retain their independent two-second collection cycle.
 No foreground-app identifiers, titles or reply bodies are exposed in error logs.
+
+A known MAIN HDMI disconnect/mute or change in port, dimensions or frame rate
+arms a separate transition hold. The daemon replays the last successful output
+without updating sampling history until a ready signal supplies a non-black frame,
+for at most five seconds. Further format notifications cannot extend the same hold.
+The ordinary pixel-black hold/fade remains active outside that window. Stop, standby,
+unsupported apps, output disable and terminal capture faults retain priority; a
+lost event feed cancels the transition hold. Capture errors retain their existing
+recovery limits and status. No hardware frame or cached output is fabricated.
 
 For TV validation, observe HDMI → app/Home → HDMI, verify capture release and
 automatic recovery, then repeat after manual Stop to confirm it stays stopped.
@@ -326,9 +340,86 @@ Save and Reset live in Advanced tuning. Ambient presets remain selected while tu
 
 ## Input and output diagnostics
 
+### Companion HLS screen stream
+
+Streaming is off by default: no companion is launched automatically and no NV12
+frames are copied without an active receiver lease. The Streaming tab does not
+auto-connect. Start the companion explicitly only when streaming is wanted.
+
+
+The Streaming tab embeds the companion's viewer without changing lighting
+settings. Enter an explicit companion origin reachable from that browser; the
+address is remembered only in browser storage. The host serves a local hls.js
+Media Source player, with native HLS fallback only where MSE is unavailable.
+A compatible external player such as IINA can open the playlist link directly.
+Leaving or hiding the tab unloads the iframe. The companion continues until stopped.
+
+`GET /api/stream/nv12?fps=10` opens one persistent HTTP connection to QSync's
+existing hardware capture. It starts no second capture. Export is opt-in,
+latest-frame only, with owned plane copies, a two-second renewable lease and a
+1–15 FPS source ceiling. The current vtCapture backend is qualified for export;
+other backends return 501. Accepted geometry is even-sized, up to 640 × 360,
+with source stride validated up to 4096 bytes and total plane footprint up to
+2 MiB. Padded source rows are packed before transmission. This does not change
+capture resolution or lighting cadence; the C1 retains its configured 320 × 180.
+
+Each packet contains a four-byte big-endian JSON-header length, UTF-8 metadata,
+then Y and interleaved UV bytes. Version 1 metadata identifies NV12, dimensions,
+plane strides/sizes, capture wall-clock milliseconds, monotonic sequence, and
+QSync's current BT.601 limited-range interpretation. Source timestamps represent
+capture acquisition, not HDMI presentation timestamps or proof of changing
+picture content. This uses Hyperion's NV12 plane-transport approach but is not
+wire-compatible with its FlatBuffers protocol. The endpoint shares the existing
+unauthenticated LAN API boundary and sends `Cache-Control: no-store`.
+
+A second receiver gets 429, inactive capture gets 409 and an invalid rate gets
+400. Pause/fault/source change clears the frame and ends the connection; a
+receiver must reconnect explicitly after capture resumes. Slow receivers cannot
+build an application frame queue; a stalled lease stops capture copying. The
+128 × 72 frozen tuning preview remains independent.
+
+The companion requires Python 3.11+, installed host FFmpeg, and the locally
+installed player asset (`bun install --cwd frontend`). No CDN is used and no
+HLS engine is embedded in the daemon dashboard. It defaults to
+persistent NV12, ten captured frames/s and ten encoded frames/s:
+
+```bash
+uv run --no-project python scripts/hls_screen.py \
+  --tv-url http://<tv-ip>:8088 --output /absolute/new/private-directory \
+  --source-fps 10 --fps 10
+```
+
+Tune `--source-fps` (1–15) independently of `--fps` (1–30). Higher rates are
+requests/ceilings, not measured guarantees. Geometry follows the configured TV
+capture; exporting does not persist new TV configuration. The viewer binds to
+localhost, normally port 18090, so it is reachable only on that computer. Stop
+with Ctrl-C. No autostart service or network-wide host listener is installed.
+The viewer reports received capture rate, encoded rate, time since the latest
+capture arrived, and repeats separately. Arrival age is not calibrated end-to-end
+latency. The host uses the standard HTTP server with keepalive, file metadata and
+conditional requests. HLS uses two-second segments. Request counters in
+`/status.json` distinguish normal refresh from a playlist request storm.
+Encoding is host-side H.264 with bounded rolling HLS segments; no LG
+encoder is invoked. No audio source has been qualified or connected.
+
+The first ten encoded seconds are retained privately as `reference.mkv`. NV12
+mode records lossless FFV1 YUV420P and timing metadata, preserving source Y/UV
+samples; RGB conversion is not a lossless claim. Repeated captures preserve wall
+time between arrivals. These pixels are not calibrated HDR display output.
+
+Legacy `--transport rgb` uses `GET /api/stream/frame`: bounded 320 × 180 RGB24
+snapshots at at most one copy per 167 ms, with dimensions/timestamp headers. It
+is retained for transport comparisons. Neither mode writes TV settings or starts
+capture when QSync is stopped. Run `uv run --no-project python
+scripts/test_hls_screen.py` for companion checks.
+
 The dashboard's Diagnostics tab shows display-driver output refresh/state, scaled video-plane size, HDMI video timing, internal decoder video, eARC/output routing and QSync capture/output rates. Output refresh is separate from content frame rate; plane size is not a panel-resolution measurement. Internal video requires a connected MAIN VDEC plane. HDMI transport and decoder details remain omitted from the dashboard pending further validation. `GET /api/status` includes a cached `diagnostics` snapshot and `sampled_unix_ms`; hardware queries run in the background at most once per two-second cycle, independent of browser refresh. Known standby clears diagnostics instead of polling hardware. Missing or stale fields remain unavailable.
 
 Video and ARC state use the shared bounded Luna query transport. Driver reads are restricted to the HDMI, decoder, sound-output and VBE status files, each limited to 64 KiB. These are read-only observations; no routing, format, capture or receiver settings are changed. Active decoder state is required before trusting audio metadata. A MAT carrier rate is not the source content's sample rate; PCM output channel counts are not the receiver's speaker layout. Atmos is labelled as TV-reported. Bit depth remains unavailable without a validated field.
+
+The **LG genre analysis** card reads `luna://com.webos.service.nnproxy/picture/get` with `{"type":"GENRE","command":"data"}` through the same bounded transport and background cycle. It displays LG's reported selection and raw Standard, Sports, Animation and Movie scores. Scores may exceed 10000 because LG combines other inputs; they are not confidence percentages. The receipt timestamp only dates the cache read: the service exposes no verified inference timestamp, so even recent replies may contain old classifications while LG AI is disabled. All-zero scores have no displayed classification. Missing or malformed replies clear the card; stale or disconnected snapshots suppress its selection and scores. Standby clears it with other diagnostics.
+
+This observation does not enable LG AI, register its native genre-change callback, start inference or change lighting. Cached polling is deliberate: the native subscription path registers a callback whose ownership has not been qualified. No separate capture or model runtime is added. See [LG AI and tone-mapping research boundaries](lg-ai-research.md) for shared-capture, LUT and custom-inference considerations.
 
 ## Bonjour discovery (off by default)
 

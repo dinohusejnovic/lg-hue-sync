@@ -31,6 +31,17 @@ reporting `paused`. Hardware release still requires on-TV verification. Resume c
 while intentionally paused retains that pause and does not acquire hardware. An explicit
 Start or Restart retries a capture fault. Standby startup does not initialize capture.
 
+`src/tv_events.rs` maintains foreground, power and video-output subscriptions through
+the bounded Luna transport. Latest-value watch channels deduplicate unchanged replies;
+only disconnected/refused streams use bounded query fallback and reconnect attempts.
+Power receipts are timestamped so cached observations cannot overwrite newer display
+commands. MAIN HDMI video events also supply automatic capture cadence and diagnostics.
+A separate five-second transition hold preserves successful output across known
+signal changes, without feeding held colours into sampling history. It ends on a ready,
+non-black frame, timeout, lost feed or policy pause. Expired holds cannot be rearmed by
+further format churn until picture recovery or an explicit reset. Cached Hue packets
+retain their RGB/XY encoding and are cleared for stop, layout refresh and reconfiguration.
+
 `src/hue/reconnect.rs` serializes Hue activation, DTLS connection and cleanup on a dedicated
 worker. Generation checks discard results superseded by stop, disable or area changes; retries
 do not block Nanoleaf or command processing. DTLS handshakes share a five-second deadline;
@@ -69,6 +80,9 @@ footprints with separable Gaussian weights around their saved Hue centres; multi
 gradient channels and legacy/manual rectangles retain their existing geometry. Reported
 Hue rectangles reflect the expanded footprint. Room fixtures smooth brightness and normalised
 colour separately, at 60% of the ordinary response clock, with colour alpha capped at 0.25.
+Room highlight influence is additionally scaled by mean-to-maximum regional luminance,
+so sparse bright samples cannot overwhelm a dark footprint and bypass its black gate.
+Perimeter highlight weighting is unchanged; genuinely bright neutral regions remain valid.
 Scene cuts still use the existing step limit. Regional black gating uses 1.2-times the configured
 threshold to wake from black and 0.8-times to remain lit; Strict black still turns gated output off.
 Whole-screen black interruptions use a shared hold/fade guard before regional processing:
