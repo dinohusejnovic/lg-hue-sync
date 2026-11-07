@@ -1,3 +1,7 @@
+/** No HTTP response arrived at all; cleared automatically once the TV answers again. */
+export class ConnectionError extends Error {
+  override name = 'ConnectionError';
+}
 export async function request<T>(
   path: string,
   body?: unknown,
@@ -6,12 +10,24 @@ export async function request<T>(
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), path.includes('/pair/') ? 60_000 : 10_000);
   try {
-    const response = await fetch(path, {
-      method,
-      signal: controller.signal,
-      headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
-      body: body === undefined ? undefined : JSON.stringify(body),
-    });
+    let response: Response;
+    try {
+      response = await fetch(path, {
+        method,
+        signal: controller.signal,
+        headers: body === undefined ? undefined : { 'Content-Type': 'application/json' },
+        body: body === undefined ? undefined : JSON.stringify(body),
+      });
+    } catch (error) {
+      // fetch() rejects only when no HTTP answer arrived: the daemon is restarting
+      // (e.g. after an Entertainment Area change), the TV is off, or Wi-Fi dropped.
+      throw new ConnectionError(
+        controller.signal.aborted
+          ? 'The TV took too long to answer. Retrying…'
+          : 'Can’t reach LG Hue Sync on the TV right now (it may be restarting). Retrying…',
+        { cause: error },
+      );
+    }
     const text = await response.text();
     let data: unknown;
     try {

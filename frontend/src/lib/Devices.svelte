@@ -32,6 +32,17 @@
       /* Shared error banner reports failures. */
     }
   }
+  async function selectArea() {
+    const name = areas.find((item) => item.id === area)?.name ?? 'the new area';
+    areaMessage = `Switching to ${name}…`;
+    try {
+      await model.command('/api/hue/area', { area_id: area });
+      // The daemon restarts to load the new layout; the dashboard reconnects on its own.
+      areaMessage = `Switched to ${name}. Sync restarts with the new layout in a few seconds.`;
+    } catch {
+      areaMessage = `Could not switch to ${name}; see the message above.`;
+    }
+  }
   async function loadAreas() {
     try {
       const { request } = await import('./api');
@@ -113,7 +124,7 @@
         >Entertainment Area <select
           bind:value={area}
           disabled={!areas.length || model.busy}
-          onchange={() => run('/api/hue/area', { area_id: area })}
+          onchange={selectArea}
           >{#each areas as item (item.id)}<option value={item.id}>{item.name}</option
             >{/each}</select
         ></label

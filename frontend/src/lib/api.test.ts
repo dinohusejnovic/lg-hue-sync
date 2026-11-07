@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'bun:test';
-import { SettingsWriter } from './api';
+import { ConnectionError, request, SettingsWriter } from './api';
 import { initialSettings, nearestStop, responseMode, blendMode } from './settings';
 describe('settings migration invariants', () => {
   test('complete snapshots serialize and collapse queued edits to the newest', async () => {
@@ -38,5 +38,19 @@ describe('settings migration invariants', () => {
     expect(blendMode(exact)).toBe('balanced');
     expect(responseMode({ ...exact, max_color_step: 19 })).toBe('');
     expect(blendMode({ ...exact, spatial_blend: 0.3 })).toBe('soft');
+  });
+});
+
+describe('request', () => {
+  test('a dropped connection becomes a retryable ConnectionError, not "Failed to fetch"', async () => {
+    const original = globalThis.fetch;
+    globalThis.fetch = (() => Promise.reject(new TypeError('Failed to fetch'))) as typeof fetch;
+    try {
+      const error = await request('/api/status').catch((e: unknown) => e);
+      expect(error).toBeInstanceOf(ConnectionError);
+      expect((error as Error).message).toContain('may be restarting');
+    } finally {
+      globalThis.fetch = original;
+    }
   });
 });

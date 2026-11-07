@@ -1,4 +1,4 @@
-import { request, SettingsWriter } from './api';
+import { ConnectionError, request, SettingsWriter } from './api';
 import type { LiveSettings } from './settings';
 import type { PreviewStatus } from './preview-types';
 import type { DiagnosticStatus } from './diagnostics-types';
@@ -30,6 +30,8 @@ export class Dashboard {
   private stopped = false;
   private polling = false;
   private revision = 0;
+  /** The banner text last set because the TV could not be reached. */
+  private connectionError = '';
   private writer = new SettingsWriter<LiveSettings>(async (value) => {
     await request('/api/settings', value);
   });
@@ -44,11 +46,15 @@ export class Dashboard {
       this.status = status;
       this.receivedAt = Date.now();
       this.online = true;
+      // The TV answers again (e.g. after the restart an area change causes): drop the stale banner.
+      if (this.connectionError && this.error === this.connectionError) this.error = '';
+      this.connectionError = '';
       if (!this.writer.pending && !this.busy && !this.dirty && revision === this.revision)
         this.settings = status.settings;
     } catch (error) {
       this.online = false;
       this.error = message(error);
+      if (error instanceof ConnectionError) this.connectionError = this.error;
     } finally {
       this.polling = false;
     }
