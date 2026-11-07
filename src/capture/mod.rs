@@ -97,6 +97,11 @@ pub trait ScreenCapture {
     fn fixed_cadence(&self) -> bool {
         false
     }
+    /// Signalled when new colours are ready, so the sync loop can process them
+    /// immediately instead of on its next fixed tick.
+    fn frame_signal(&self) -> Option<std::sync::Arc<tokio::sync::Notify>> {
+        None
+    }
     fn supports_nv12_stream(&self) -> bool {
         false
     }

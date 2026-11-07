@@ -799,6 +799,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let mut last_heartbeat = tokio::time::Instant::now();
     let mut last_nanoleaf_heartbeat = tokio::time::Instant::now();
     let mut light_update_count = 0u32;
+    // Idle-tick skipping: the previous tick's computed output per device, and how
+    // many consecutive ticks left it unchanged.
+    let mut prev_tick_hue: Vec<(u8, (u16, u16, u16))> = Vec::new();
+    let mut prev_tick_nanoleaf: Vec<RgbColor> = Vec::new();
+    let mut settled_ticks = 0u32;
     let mut light_update_window = tokio::time::Instant::now();
     let mut capture_retry = RetryState::new();
     if !capture.is_real_hardware() {
@@ -840,6 +845,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         source_policy.observe_display(shared_state.display_off.load(Ordering::Relaxed));
         let loop_start = tokio::time::Instant::now();
         let mut emitted_light_update = false;
+        // Whether this tick computed light output, and whether all of it matched the last tick.
+        let mut tick_output = false;
+        let mut tick_unchanged = true;
 
         watchdog.tick();
 
@@ -1784,6 +1792,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                                 .collect();
                             // Share live sampled Hue colors with Web UI
                             *shared_state.live_hue_colors.write().unwrap() = sampled_zones;
+                            tick_output = true;
+                            if channels != prev_tick_hue {
+                                tick_unchanged = false;
+                                prev_tick_hue.clone_from(&channels);
+                            }
 
                             // Adaptive deadband throttling for Hue Bridge
                             let is_virtually_identical = if !last_channels.is_empty()
@@ -1865,6 +1878,11 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                                 );
                             }
 
+                            tick_output = true;
+                            if nl_colors != prev_tick_nanoleaf {
+                                tick_unchanged = false;
+                                prev_tick_nanoleaf.clone_from(&nl_colors);
+                            }
                             // Share live sampled Nanoleaf colors with Web UI
                             *shared_state.live_nanoleaf_colors.write().unwrap() = nl_colors.clone();
                             let nanoleaf_changed =
@@ -2048,9 +2066,34 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             light_update_window = tokio::time::Instant::now();
         }
 
+        settled_ticks = if tick_output && tick_unchanged {
+            settled_ticks.saturating_add(1)
+        } else {
+            0
+        };
+        // Once the lights have settled (smoothing, fades and strobes all done),
+        // further ticks would recompute identical output: with a capture that
+        // signals new colours, wait for that signal instead, waking at least
+        // every 50 ms for commands and housekeeping.
+        let tick_budget = if settled_ticks >= 2 && capture.frame_signal().is_some() {
+            frame_interval.max(SETTLED_TICK_INTERVAL)
+        } else {
+            frame_interval
+        };
         let elapsed = loop_start.elapsed();
-        if elapsed < frame_interval {
-            tokio::time::sleep(frame_interval - elapsed).await;
+        if elapsed < tick_budget {
+            let remaining = tick_budget - elapsed;
+            // New histogram colours end the wait early: they reach the lights
+            // without waiting for the next tick, which still drives smoothing.
+            match capture.frame_signal() {
+                Some(ready) => {
+                    tokio::select! {
+                        _ = tokio::time::sleep(remaining) => {},
+                        _ = ready.notified() => {},
+                    }
+                }
+                None => tokio::time::sleep(remaining).await,
+            }
         }
     }
 
@@ -2083,6 +2126,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     info!("lg-hue-sync terminated cleanly.");
     Ok(())
 }
+
+/// Longest wait between sync-loop ticks once the light output has settled.
+const SETTLED_TICK_INTERVAL: Duration = Duration::from_millis(50);
 
 fn update_tv_observation(
     events: &mut tv_events::TvEvents,
@@ -2296,7 +2342,6 @@ impl WatchdogHeartbeat {
     }
 }
 
-/// What the background Luna probe should poll; manual Stop idles it completely.
 #[cfg(test)]
 mod tests {
     use super::*;

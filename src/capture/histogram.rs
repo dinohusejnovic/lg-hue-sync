@@ -23,7 +23,9 @@
 
 use std::fs::OpenOptions;
 use std::os::unix::io::RawFd;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use anyhow::{anyhow, Context, Result};
@@ -65,7 +67,7 @@ static RAW_PAYLOAD_HASH: AtomicU64 = AtomicU64::new(0);
 /// refresh count. Strobe boost uses it to tell real video from a phase-locked strobe.
 pub static RAW_REFRESHES: AtomicU64 = AtomicU64::new(0);
 
-fn trace_read(payload: &[u8], zone_colors: &[[u8; 4]; ZONES], epoch: Instant) {
+fn trace_read(payload: &[u8], zone_colors: &[[u8; 4]; ZONES], epoch: Instant) -> bool {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     payload.hash(&mut hasher);
@@ -107,6 +109,7 @@ fn trace_read(payload: &[u8], zone_colors: &[[u8; 4]; ZONES], epoch: Instant) {
             bright_pct: pct(bright),
         });
     }
+    raw_changed
 }
 /// Public path used in log messages (same device).
 pub const DEVICE_PATH_PUBLIC: &str = DEVICE_PATH;
@@ -185,114 +188,90 @@ struct InnerArg {
     _r1: u32,
 }
 
-pub struct HistogramCapture {
-    fd: RawFd,
-    width: u32,
-    height: u32,
-    /// Synthetic BGRA frame: one pixel per histogram zone neighborhood (4x4);
-    /// the downstream ZoneSampler maps its configured light zones onto it.
-    frame: Vec<u8>,
-    started: bool,
-    last_read: Instant,
-    read_interval: Duration,
-    /// Cached per-zone colors from the last histogram read (BGRA byte order).
-    zone_colors: [[u8; 4]; ZONES],
-    /// Per-plane bin totals from the last read; used for the layout probe.
-    last_totals: [[u32; 3]; ZONES],
-    empty_reads: u32,
-    epoch: Instant,
+/// When to read the histogram. Each read costs ~1.1 ms of CPU whatever its
+/// size (measured), and the engine publishes new data only every ~85-140 ms
+/// (a ~100 ms wait, then the next video frame; content-dependent, and some
+/// refreshes repeat the previous bytes). Never less than ~76 ms apart.
+///
+/// The schedule never notices a change later than the old fixed 60 Hz poll:
+/// after a change it sleeps through the time the engine cannot refresh, then
+/// watches every 8 ms while the next refresh is due, and otherwise polls at
+/// 60 Hz. Nothing is learned, so nothing can drift or lock itself out.
+#[derive(Debug, Clone)]
+struct ReadSchedule {
+    last_change: Option<Instant>,
+    last_read: Option<Instant>,
 }
 
-impl HistogramCapture {
-    /// Cheap capability check for capture-source policy: on this device the
-    /// aggregate backend is the primary capture path (see `create_capture`),
-    /// so non-HDMI foreground apps must not block the pipeline. `try_new`
-    /// still verifies the real hardware contract; if it fails and a frame
-    /// backend takes over, source-pause semantics return with it.
-    pub fn device_present() -> bool {
-        std::fs::metadata(DEVICE_PATH).is_ok()
+impl ReadSchedule {
+    /// Sleep after a change: the shortest refresh gap measured on the C5
+    /// (~76 ms), less the 8 ms by which the change may predate its detection
+    /// and a small margin.
+    const QUIET: Duration = Duration::from_millis(66);
+    /// Read step while a refresh is due: changes are noticed within 8 ms.
+    const STEP: Duration = Duration::from_millis(8);
+    /// Watch with `STEP` until this long after a change (single-refresh gaps
+    /// measured up to ~140 ms on 30 fps content).
+    const WATCH: Duration = Duration::from_millis(145);
+    /// Otherwise poll at the old fixed rate (start-up, repeated refreshes,
+    /// static pictures).
+    const IDLE: Duration = Duration::from_micros(16_667);
+
+    fn new() -> Self {
+        Self {
+            last_change: None,
+            last_read: None,
+        }
     }
 
-    /// Opens `/dev/video60` and starts histogram collection.
-    pub fn try_new(target_width: u32, target_height: u32) -> Result<Self> {
-        if target_width == 0 || target_height == 0 {
-            return Err(anyhow!("invalid capture dimensions"));
+    /// Record a read that started at `at`; `refreshed` means its bytes differed
+    /// from the previous read.
+    fn observe(&mut self, at: Instant, refreshed: bool) {
+        self.last_read = Some(at);
+        if refreshed {
+            self.last_change = Some(at);
         }
+    }
+
+    /// When the next read is due; at or before `now` means read immediately.
+    /// Intervals count from the previous read, never from `now`, so a caller
+    /// that sleeps until the returned instant always makes progress.
+    fn next_read(&self, now: Instant) -> Instant {
+        let Some(read) = self.last_read else {
+            return now;
+        };
+        let Some(last) = self.last_change else {
+            return read + Self::IDLE;
+        };
+        let since = now.saturating_duration_since(last);
+        if since < Self::QUIET {
+            (last + Self::QUIET).max(read + Self::STEP)
+        } else if since <= Self::WATCH {
+            read + Self::STEP
+        } else {
+            read + Self::IDLE
+        }
+    }
+}
+
+/// The open `/dev/video60` handle; stops the stream and closes on drop.
+struct Device {
+    fd: RawFd,
+    started: bool,
+}
+
+impl Device {
+    fn open() -> Result<Self> {
         let file = OpenOptions::new()
             .read(true)
             .write(true)
             .open(DEVICE_PATH)
             .with_context(|| format!("open {}", DEVICE_PATH))?;
-        let fd = std::os::unix::io::IntoRawFd::into_raw_fd(file);
-        let mut capture = Self {
-            fd,
-            width: target_width,
-            height: target_height,
-            frame: vec![0; Self::FRAME_W as usize * Self::FRAME_H as usize * 4],
+        Ok(Self {
+            fd: std::os::unix::io::IntoRawFd::into_raw_fd(file),
             started: false,
-            last_read: Instant::now() - Duration::from_secs(1),
-            // Measured on the C5 (webOS 10.3.1): the histogram engine refreshes
-            // about every 100 ms (~10 Hz; see /api/histogram/trace). Polling at
-            // ~60 Hz does not raise that rate, but picks each refresh up within
-            // one 16 ms tick, which keeps added latency minimal.
-            read_interval: Duration::from_millis(16),
-            zone_colors: [[0, 0, 0, 255]; ZONES],
-            last_totals: [[0; 3]; ZONES],
-            empty_reads: 0,
-            epoch: Instant::now(),
-        };
-        capture.start().context("start histogram capture")?;
-        // Layout probe: the zone geometry and sample-count constants were
-        // calibrated on webOS 24/25 hardware. If this device reports a
-        // different fixed total per zone, the layout constants would be wrong
-        // for it — fail here so create_capture falls back to another backend.
-        // The first refresh after START can be partial (~5400 of 7200 samples in
-        // zone 0), so give the engine up to ~200 ms to settle before judging it.
-        let mut layout = Err(anyhow!(
-            "histogram probe read failed on {}",
-            DEVICE_PATH_PUBLIC
-        ));
-        for attempt in 0..10 {
-            if attempt > 0 {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            if !capture.read_histograms() {
-                continue;
-            }
-            layout = capture.check_layout();
-            if layout.is_ok() {
-                break;
-            }
-        }
-        layout?;
-        info!("[+] Histogram layout verified (16 zones, sample counts match calibration).");
-        Ok(capture)
+        })
     }
-
-    /// Sample counts per zone must match the calibrated 16-zone layout.
-    fn check_layout(&self) -> Result<()> {
-        for (z, totals) in self.last_totals.iter().enumerate() {
-            let expected = ZONE_SAMPLES[z];
-            let measured = totals[0];
-            if expected == 0 || measured == 0 {
-                return Err(anyhow!(
-                    "histogram zone {z} reported no samples (expected {expected})"
-                ));
-            }
-            let drift = (measured as f32 - expected as f32).abs() / expected as f32;
-            if drift > 0.05 {
-                return Err(anyhow!(
-                    "histogram zone {z} sample count {measured} deviates {:.0}% \
-                     from calibrated {expected}; unknown histogram layout",
-                    drift * 100.0
-                ));
-            }
-        }
-        Ok(())
-    }
-
-    const FRAME_W: u32 = 4;
-    const FRAME_H: u32 = 4;
 
     fn start(&mut self) -> Result<()> {
         let ret = self.control(CMD_START, 0, 0)?;
@@ -334,10 +313,11 @@ impl HistogramCapture {
         Ok(ret)
     }
 
-    /// GET_DATA into a local buffer, then decode into `zone_colors`.
-    /// Returns false on transient failure (device not ready yet).
-    fn read_histograms(&mut self) -> bool {
-        let mut payload = [0u8; ZONES * RECORD_SIZE];
+    /// GET_DATA into `payload`; false on transient failure (device not ready).
+    fn read(&self, payload: &mut [u8]) -> bool {
+        if payload.len() < ZONES * RECORD_SIZE {
+            return false;
+        }
         let mut inner = InnerArg {
             cmd: CMD_GET_DATA,
             size: (ZONES * RECORD_SIZE) as u32,
@@ -353,17 +333,39 @@ impl HistogramCapture {
             _r2: 0,
             inner_ptr: &mut inner,
         };
-        // SAFETY: repr(C) args, out_ptr points at the payload buffer which
-        // outlives the ioctl call.
-        let ret = unsafe { libc::ioctl(self.fd, IOCTL_GET, &mut outer as *mut OuterArg) };
-        if ret < 0 {
-            return false;
+        // SAFETY: repr(C) args, out_ptr points at a buffer of at least the
+        // requested size which outlives the ioctl call.
+        unsafe { libc::ioctl(self.fd, IOCTL_GET, &mut outer as *mut OuterArg) >= 0 }
+    }
+}
+
+impl Drop for Device {
+    fn drop(&mut self) {
+        if self.started {
+            let _ = self.control(CMD_STOP, 0, 0);
+            info!("[-] Histogram capture stopped.");
         }
-        let ok = self.decode_payload(&payload);
-        if ok {
-            trace_read(&payload, &self.zone_colors, self.epoch);
+        // SAFETY: the fd was opened by `Device::open` and is closed only here.
+        unsafe {
+            libc::close(self.fd);
         }
-        ok
+    }
+}
+
+/// Decodes histogram payloads into per-zone colours.
+struct Decoder {
+    /// Per-zone colors from the last good read (BGRA byte order).
+    zone_colors: [[u8; 4]; ZONES],
+    /// Per-plane bin totals from the last read; used for the layout probe.
+    last_totals: [[u32; 3]; ZONES],
+}
+
+impl Decoder {
+    fn new() -> Self {
+        Self {
+            zone_colors: [[0, 0, 0, 255]; ZONES],
+            last_totals: [[0; 3]; ZONES],
+        }
     }
 
     /// Converts 16 zone records into per-zone BGRA colors. Each record is a
@@ -415,80 +417,214 @@ impl HistogramCapture {
         any_nonempty
     }
 
-    /// Repaints the synthetic 4x4 BGRA frame from zone colors. Each frame
-    /// pixel takes the color of the finest (smallest-area) zone whose
-    /// rectangle covers that pixel's center.
-    fn paint_frame(&mut self) {
-        for py in 0..Self::FRAME_H {
-            for px in 0..Self::FRAME_W {
-                let cx = (px as f32 + 0.5) / Self::FRAME_W as f32;
-                let cy = (py as f32 + 0.5) / Self::FRAME_H as f32;
-                let mut best: Option<(usize, f32)> = None;
-                for (z, &(x0, x1, y0, y1)) in ZONE_RECTS.iter().enumerate() {
-                    if cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1 {
-                        let area = (x1 - x0) * (y1 - y0);
-                        if best.is_none_or(|(_, a)| area < a) {
-                            best = Some((z, area));
-                        }
-                    }
-                }
-                let color = match best {
-                    Some((z, _)) => self.zone_colors[z],
-                    None => [0, 0, 0, 255],
-                };
-                let offset = ((py * Self::FRAME_W + px) as usize) * 4;
-                self.frame[offset..offset + 4].copy_from_slice(&color);
+    /// Sample counts per zone must match the calibrated 16-zone layout.
+    fn check_layout(&self) -> Result<()> {
+        for (z, totals) in self.last_totals.iter().enumerate() {
+            let expected = ZONE_SAMPLES[z];
+            let measured = totals[0];
+            if expected == 0 || measured == 0 {
+                return Err(anyhow!(
+                    "histogram zone {z} reported no samples (expected {expected})"
+                ));
+            }
+            let drift = (measured as f32 - expected as f32).abs() / expected as f32;
+            if drift > 0.05 {
+                return Err(anyhow!(
+                    "histogram zone {z} sample count {measured} deviates {:.0}% \
+                     from calibrated {expected}; unknown histogram layout",
+                    drift * 100.0
+                ));
             }
         }
+        Ok(())
+    }
+}
+
+/// Consecutive failed reads after which the backend asks for a restart.
+const MAX_FAILED_READS: u32 = 20;
+
+/// State the reader thread shares with the sync loop.
+struct Shared {
+    zone_colors: Mutex<[[u8; 4]; ZONES]>,
+    failed_reads: AtomicU32,
+    stop: AtomicBool,
+    /// Wakes the sync loop as soon as new colours are published.
+    ready: Arc<tokio::sync::Notify>,
+}
+
+/// Reader thread: reads on the [`ReadSchedule`], publishes changed colours and
+/// wakes the sync loop. Dropping `device` on exit stops the stream.
+fn run_reader(device: Device, mut decoder: Decoder, shared: Arc<Shared>, epoch: Instant) {
+    let mut payload = vec![0u8; ZONES * RECORD_SIZE];
+    let mut schedule = ReadSchedule::new();
+    while !shared.stop.load(Ordering::Relaxed) {
+        let now = Instant::now();
+        let due = schedule.next_read(now);
+        if due > now {
+            // Drop unparks the thread so shutdown does not wait out the sleep.
+            std::thread::park_timeout(due - now);
+            continue;
+        }
+        let before = decoder.zone_colors;
+        let ok = device.read(&mut payload) && decoder.decode_payload(&payload);
+        let nanos = now.elapsed().as_nanos() as u64;
+        READ_NS_TOTAL.fetch_add(nanos, Ordering::Relaxed);
+        READ_NS_MAX.fetch_max(nanos, Ordering::Relaxed);
+        if !ok {
+            FAILED_READS.fetch_add(1, Ordering::Relaxed);
+            schedule.observe(now, false);
+            if shared.failed_reads.fetch_add(1, Ordering::Relaxed) + 1 >= MAX_FAILED_READS {
+                // Unresponsive device: the sync loop restarts capture with back-off.
+                shared.ready.notify_one();
+                break;
+            }
+            continue;
+        }
+        READS.fetch_add(1, Ordering::Relaxed);
+        shared.failed_reads.store(0, Ordering::Relaxed);
+        let refreshed = trace_read(&payload, &decoder.zone_colors, epoch);
+        schedule.observe(now, refreshed);
+        if decoder.zone_colors != before {
+            CHANGED_READS.fetch_add(1, Ordering::Relaxed);
+            *shared.zone_colors.lock().unwrap() = decoder.zone_colors;
+            shared.ready.notify_one();
+        }
+    }
+    drop(device);
+}
+
+pub struct HistogramCapture {
+    width: u32,
+    height: u32,
+    /// Synthetic BGRA frame: one pixel per histogram zone neighborhood (4x4);
+    /// the downstream ZoneSampler maps its configured light zones onto it.
+    frame: Vec<u8>,
+    shared: Arc<Shared>,
+    reader: Option<JoinHandle<()>>,
+}
+
+impl HistogramCapture {
+    /// Cheap capability check for capture-source policy: on this device the
+    /// aggregate backend is the primary capture path (see `create_capture`),
+    /// so non-HDMI foreground apps must not block the pipeline. `try_new`
+    /// still verifies the real hardware contract; if it fails and a frame
+    /// backend takes over, source-pause semantics return with it.
+    pub fn device_present() -> bool {
+        std::fs::metadata(DEVICE_PATH).is_ok()
     }
 
-    fn stop(&mut self) {
-        if self.started {
-            let _ = self.control(CMD_STOP, 0, 0);
-            self.started = false;
-            info!("[-] Histogram capture stopped.");
+    /// Opens `/dev/video60`, verifies the zone layout and starts the reader thread.
+    pub fn try_new(target_width: u32, target_height: u32) -> Result<Self> {
+        if target_width == 0 || target_height == 0 {
+            return Err(anyhow!("invalid capture dimensions"));
+        }
+        let mut device = Device::open()?;
+        device.start().context("start histogram capture")?;
+        let mut decoder = Decoder::new();
+        // Layout probe: the zone geometry and sample-count constants were
+        // calibrated on webOS 24/25 hardware. If this device reports a
+        // different fixed total per zone, the layout constants would be wrong
+        // for it — fail here so create_capture falls back to another backend.
+        // The first refresh after START can be partial (~5400 of 7200 samples in
+        // zone 0), so give the engine up to ~200 ms to settle before judging it.
+        let mut payload = vec![0u8; ZONES * RECORD_SIZE];
+        let mut layout = Err(anyhow!(
+            "histogram probe read failed on {}",
+            DEVICE_PATH_PUBLIC
+        ));
+        for attempt in 0..10 {
+            if attempt > 0 {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            if !(device.read(&mut payload) && decoder.decode_payload(&payload)) {
+                continue;
+            }
+            layout = decoder.check_layout();
+            if layout.is_ok() {
+                break;
+            }
+        }
+        layout?;
+        info!("[+] Histogram layout verified (16 zones, sample counts match calibration).");
+        let shared = Arc::new(Shared {
+            zone_colors: Mutex::new(decoder.zone_colors),
+            failed_reads: AtomicU32::new(0),
+            stop: AtomicBool::new(false),
+            ready: Arc::new(tokio::sync::Notify::new()),
+        });
+        let reader_shared = shared.clone();
+        let reader = std::thread::Builder::new()
+            .name("histogram".into())
+            .spawn(move || run_reader(device, decoder, reader_shared, Instant::now()))
+            .context("spawn histogram reader")?;
+        Ok(Self {
+            width: target_width,
+            height: target_height,
+            frame: vec![0; Self::FRAME_W as usize * Self::FRAME_H as usize * 4],
+            shared,
+            reader: Some(reader),
+        })
+    }
+
+    const FRAME_W: u32 = 4;
+    const FRAME_H: u32 = 4;
+
+    fn stop_reader(&mut self) {
+        if let Some(reader) = self.reader.take() {
+            self.shared.stop.store(true, Ordering::Relaxed);
+            reader.thread().unpark();
+            let _ = reader.join();
+        }
+    }
+}
+
+/// Repaints the synthetic 4x4 BGRA frame from zone colors. Each frame pixel
+/// takes the color of the finest (smallest-area) zone whose rectangle covers
+/// that pixel's center.
+fn paint_frame(zone_colors: &[[u8; 4]; ZONES], frame: &mut [u8]) {
+    let (w, h) = (HistogramCapture::FRAME_W, HistogramCapture::FRAME_H);
+    for py in 0..h {
+        for px in 0..w {
+            let cx = (px as f32 + 0.5) / w as f32;
+            let cy = (py as f32 + 0.5) / h as f32;
+            let mut best: Option<(usize, f32)> = None;
+            for (z, &(x0, x1, y0, y1)) in ZONE_RECTS.iter().enumerate() {
+                if cx >= x0 && cx <= x1 && cy >= y0 && cy <= y1 {
+                    let area = (x1 - x0) * (y1 - y0);
+                    if best.is_none_or(|(_, a)| area < a) {
+                        best = Some((z, area));
+                    }
+                }
+            }
+            let color = match best {
+                Some((z, _)) => zone_colors[z],
+                None => [0, 0, 0, 255],
+            };
+            let offset = ((py * w + px) as usize) * 4;
+            frame[offset..offset + 4].copy_from_slice(&color);
         }
     }
 }
 
 impl ScreenCapture for HistogramCapture {
     fn acquire_frame(&mut self) -> std::result::Result<CapturedFrame<'_>, CaptureError> {
-        if !self.started {
+        if self.reader.is_none() {
             return Err(CaptureError::RestartRequired {
                 backend: "vthistogram",
                 reason: "histogram stream stopped",
             });
         }
         FRAME_REQUESTS.fetch_add(1, Ordering::Relaxed);
-        // Throttle reads to the histogram refresh cadence.
-        if self.last_read.elapsed() >= self.read_interval {
-            let before = self.zone_colors;
-            let started = Instant::now();
-            let ok = self.read_histograms();
-            let nanos = started.elapsed().as_nanos() as u64;
-            READ_NS_TOTAL.fetch_add(nanos, Ordering::Relaxed);
-            READ_NS_MAX.fetch_max(nanos, Ordering::Relaxed);
-            if ok {
-                READS.fetch_add(1, Ordering::Relaxed);
-                if self.zone_colors != before {
-                    CHANGED_READS.fetch_add(1, Ordering::Relaxed);
-                }
-                self.empty_reads = 0;
-            } else {
-                FAILED_READS.fetch_add(1, Ordering::Relaxed);
-                self.empty_reads = self.empty_reads.saturating_add(1);
-            }
-            self.last_read = Instant::now();
-        }
         // Unresponsive device: pause via restart, recovery logic backs off.
-        if self.empty_reads >= 20 {
-            self.stop();
+        if self.shared.failed_reads.load(Ordering::Relaxed) >= MAX_FAILED_READS {
+            self.stop_reader();
             return Err(CaptureError::RestartRequired {
                 backend: "vthistogram",
                 reason: "histogram reads unavailable",
             });
         }
-        self.paint_frame();
+        let colors = *self.shared.zone_colors.lock().unwrap();
+        paint_frame(&colors, &mut self.frame);
         Ok(CapturedFrame {
             data: &self.frame,
             width: Self::FRAME_W,
@@ -508,14 +644,15 @@ impl ScreenCapture for HistogramCapture {
     fn fixed_cadence(&self) -> bool {
         true
     }
+
+    fn frame_signal(&self) -> Option<Arc<tokio::sync::Notify>> {
+        Some(self.shared.ready.clone())
+    }
 }
 
 impl Drop for HistogramCapture {
     fn drop(&mut self) {
-        self.stop();
-        unsafe {
-            libc::close(self.fd);
-        }
+        self.stop_reader();
     }
 }
 
@@ -523,25 +660,15 @@ impl Drop for HistogramCapture {
 mod tests {
     use super::*;
 
-    /// Test-only instance with no device attached (fd -1, never touched by
-    /// the decode/paint paths under test).
-    fn test_capture() -> HistogramCapture {
-        HistogramCapture {
-            fd: -1,
-            width: 160,
-            height: 90,
-            frame: vec![
-                0;
-                HistogramCapture::FRAME_W as usize * HistogramCapture::FRAME_H as usize * 4
-            ],
-            started: false,
-            last_read: Instant::now(),
-            read_interval: Duration::from_millis(66),
-            zone_colors: [[0, 0, 0, 255]; ZONES],
-            last_totals: [[0; 3]; ZONES],
-            empty_reads: 0,
-            epoch: Instant::now(),
-        }
+    fn test_capture() -> Decoder {
+        Decoder::new()
+    }
+
+    fn painted(colors: &[[u8; 4]; ZONES]) -> Vec<u8> {
+        let mut frame =
+            vec![0; HistogramCapture::FRAME_W as usize * HistogramCapture::FRAME_H as usize * 4];
+        paint_frame(colors, &mut frame);
+        frame
     }
 
     /// Serializes 3x256 u16 bins + 4-byte header into a zone record.
@@ -556,7 +683,7 @@ mod tests {
         rec
     }
 
-    fn decode(capture: &mut HistogramCapture, payload: &[u8]) -> bool {
+    fn decode(capture: &mut Decoder, payload: &[u8]) -> bool {
         capture.decode_payload(payload)
     }
 
@@ -663,12 +790,12 @@ mod tests {
         for z in 0..ZONES {
             capture.zone_colors[z] = [z as u8, 0, z as u8, 255];
         }
-        capture.paint_frame();
+        let frame = painted(&capture.zone_colors);
         // Frame pixel (1,1) center = (0.375, 0.375): covered by z0 (center
         // column, area 0.4775), z2 (center square), and z4 (left half).
         // z2 is the smallest covering rect (0.425 x 0.375 = 0.159 area).
         let offset = (HistogramCapture::FRAME_W + 1) as usize * 4;
-        assert_eq!(capture.frame[offset], 2, "B channel holds zone id");
+        assert_eq!(frame[offset], 2, "B channel holds zone id");
     }
 
     #[test]
@@ -677,12 +804,119 @@ mod tests {
         for colors in capture.zone_colors.iter_mut() {
             *colors = [255, 255, 255, 255];
         }
-        capture.paint_frame();
+        let frame = painted(&capture.zone_colors);
         // The 16 zone rectangles overlap enough to cover the full screen
         // union (halves z4/z8 alone cover everything); every pixel must get
         // a zone color, never the fallback black.
-        for chunk in capture.frame.as_chunks::<4>().0 {
+        for chunk in frame.as_chunks::<4>().0 {
             assert_eq!(chunk, &[255, 255, 255, 255]);
         }
+    }
+
+    const MS: Duration = Duration::from_millis(1);
+
+    #[test]
+    fn schedule_reads_at_once_then_polls_at_the_old_rate() {
+        let mut schedule = ReadSchedule::new();
+        let t0 = Instant::now();
+        assert_eq!(schedule.next_read(t0), t0);
+        schedule.observe(t0, false);
+        // Counted from the read, so sleeping until the result always reaches it.
+        assert_eq!(schedule.next_read(t0 + MS), t0 + ReadSchedule::IDLE);
+        assert_eq!(schedule.next_read(t0 + 40 * MS), t0 + ReadSchedule::IDLE);
+    }
+
+    #[test]
+    fn schedule_sleeps_through_the_quiet_time_then_watches_then_polls() {
+        let mut schedule = ReadSchedule::new();
+        let t0 = Instant::now();
+        schedule.observe(t0, true);
+        // No refresh can land within 66 ms of a change: sleep.
+        assert_eq!(schedule.next_read(t0 + MS), t0 + 66 * MS);
+        // While the next refresh is due, read every 8 ms...
+        schedule.observe(t0 + 66 * MS, false);
+        assert_eq!(schedule.next_read(t0 + 67 * MS), t0 + 74 * MS);
+        schedule.observe(t0 + 138 * MS, false);
+        assert_eq!(schedule.next_read(t0 + 139 * MS), t0 + 146 * MS);
+        // ...then fall back to the old 60 Hz poll, never slower than before.
+        schedule.observe(t0 + 146 * MS, false);
+        assert_eq!(
+            schedule.next_read(t0 + 147 * MS),
+            t0 + 146 * MS + ReadSchedule::IDLE
+        );
+        // A change restarts the cycle.
+        schedule.observe(t0 + 170 * MS, true);
+        assert_eq!(schedule.next_read(t0 + 171 * MS), t0 + 236 * MS);
+    }
+
+    /// Drives the schedule like `run_reader` against a simulated engine that
+    /// publishes at the given gaps (cycled), with every `identical_every`-th
+    /// refresh repeating the previous bytes (0: a static picture). Returns
+    /// reads per second and the median and worst refresh-to-detection delay.
+    fn simulate(gaps_ms: &[u64], identical_every: u64) -> (f64, Duration, Duration) {
+        let mut schedule = ReadSchedule::new();
+        let t0 = Instant::now();
+        let mut refresh_times = vec![t0 + 50 * MS];
+        while *refresh_times.last().unwrap() < t0 + Duration::from_secs(11) {
+            let gap = gaps_ms[refresh_times.len() % gaps_ms.len()];
+            refresh_times.push(*refresh_times.last().unwrap() + Duration::from_millis(gap));
+        }
+        let changed = |n: usize| {
+            n == 0 || (identical_every != 0 && !(n as u64).is_multiple_of(identical_every))
+        };
+        let (mut now, mut seen, mut reads) = (t0, None::<usize>, 0u32);
+        let mut delays = Vec::new();
+        let end = t0 + Duration::from_secs(10);
+        while now < end {
+            now = now.max(schedule.next_read(now));
+            reads += 1;
+            let latest = refresh_times.iter().rposition(|&r| r <= now);
+            let first_new = seen.map_or(0, |s| s + 1);
+            let refreshed = latest.is_some_and(|l| (first_new..=l).any(changed));
+            if refreshed && now > t0 + Duration::from_secs(1) {
+                let l = latest.unwrap();
+                let n = (first_new..=l).rev().find(|&n| changed(n)).unwrap();
+                delays.push(now - refresh_times[n]);
+            }
+            if latest.is_some() {
+                seen = latest;
+            }
+            schedule.observe(now, refreshed);
+            now += Duration::from_micros(1100); // the read itself
+        }
+        delays.sort();
+        let median = delays.get(delays.len() / 2).copied().unwrap_or_default();
+        let worst = delays.last().copied().unwrap_or_default();
+        (f64::from(reads) / 10.0, median, worst)
+    }
+
+    #[test]
+    fn schedule_is_never_slower_than_fixed_polling() {
+        // The old fixed 16.7 ms poll: ~60 reads/s, ~8 ms median, ~16.7 ms worst.
+        // Netflix-like: ~100 ms with the measured 86-111 ms spread.
+        let jittery = [100, 104, 90, 103, 111, 89, 97, 86, 105, 95];
+        // 30 fps YouTube-like: a steady ~133 ms.
+        let steady = [130, 135];
+        for (name, gaps, identical_every) in [
+            ("jittery", &jittery[..], u64::MAX),
+            ("jittery, every 3rd repeated", &jittery[..], 3),
+            ("steady", &steady[..], u64::MAX),
+            ("steady, every 3rd repeated", &steady[..], 3),
+        ] {
+            let (rate, median, worst) = simulate(gaps, identical_every);
+            eprintln!("{name}: {rate} reads/s, median {median:?}, worst {worst:?}");
+            // Reads stay within ~20% of the old poll (fewer on ~100 ms content,
+            // a few more on 30 fps content) for 2-4x lower typical delay.
+            assert!(rate <= 72.0, "{name}: reads/s {rate}");
+            assert!(median <= 6 * MS, "{name}: median {median:?}");
+            assert!(worst <= ReadSchedule::IDLE + MS, "{name}: worst {worst:?}");
+        }
+    }
+
+    #[test]
+    fn static_pictures_poll_at_the_old_rate() {
+        let (rate, _, _) = simulate(&[100], 0);
+        eprintln!("static: {rate} reads/s");
+        assert!(rate <= 60.5, "reads/s {rate}");
     }
 }

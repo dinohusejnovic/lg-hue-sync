@@ -15,11 +15,18 @@ struct State {
 
 /// Keep-alive repeat of an unchanged packet at Hue's recommended ~50 Hz.
 const REPEAT_INTERVAL: Duration = Duration::from_millis(20);
-/// New colours go out as soon as this gap allows (~60 Hz cap) instead of waiting for the repeat.
+/// New colours go out as soon as this gap since the previous *new* colours allows
+/// (~60 Hz cap). A keep-alive repeat does not delay them: with histogram capture
+/// new colours arrive ~10 times a second, and waiting behind a repeat would add
+/// up to 16.5 ms of latency for nothing.
 const MIN_SEND_GAP: Duration = Duration::from_micros(16_500);
 
-fn send_due(last_sent: Instant, fresh: bool) -> Instant {
-    last_sent + if fresh { MIN_SEND_GAP } else { REPEAT_INTERVAL }
+fn send_due(last_sent: Instant, last_fresh: Instant, fresh: bool) -> Instant {
+    if fresh {
+        last_fresh + MIN_SEND_GAP
+    } else {
+        last_sent + REPEAT_INTERVAL
+    }
 }
 
 /// Repeat cached output at Hue's recommended cadence without resampling static colours.
@@ -41,6 +48,7 @@ impl RepeatingHueStream {
             .spawn(move || {
                 let (lock, wake) = &*shared;
                 let mut last_sent = Instant::now() - REPEAT_INTERVAL;
+                let mut last_fresh = last_sent;
                 loop {
                     let mut state = lock.lock().unwrap();
                     loop {
@@ -51,7 +59,7 @@ impl RepeatingHueStream {
                             state = wake.wait(state).unwrap();
                             continue;
                         }
-                        let due = send_due(last_sent, state.fresh);
+                        let due = send_due(last_sent, last_fresh, state.fresh);
                         let now = Instant::now();
                         if now >= due {
                             break;
@@ -62,13 +70,16 @@ impl RepeatingHueStream {
                         break;
                     }
                     let packet = state.packet.clone().unwrap();
-                    state.fresh = false;
+                    let fresh = std::mem::take(&mut state.fresh);
                     drop(state);
                     if let Err(error) = send(&packet) {
                         lock.lock().unwrap().error = Some(error.to_string());
                         break;
                     }
                     last_sent = Instant::now();
+                    if fresh {
+                        last_fresh = last_sent;
+                    }
                 }
             })?;
         Ok(Self {
@@ -108,8 +119,14 @@ mod tests {
     #[test]
     fn fresh_packets_use_the_short_gap_and_repeats_the_keepalive_interval() {
         let t = Instant::now();
-        assert_eq!(send_due(t, true), t + MIN_SEND_GAP);
-        assert_eq!(send_due(t, false), t + REPEAT_INTERVAL);
+        assert_eq!(send_due(t, t, true), t + MIN_SEND_GAP);
+        assert_eq!(send_due(t, t, false), t + REPEAT_INTERVAL);
+        // A keep-alive repeat just sent does not hold back new colours.
+        let fresh_earlier = t - Duration::from_millis(30);
+        assert_eq!(
+            send_due(t, fresh_earlier, true),
+            fresh_earlier + MIN_SEND_GAP
+        );
         assert!(MIN_SEND_GAP < REPEAT_INTERVAL);
         // Never faster than ~60 Hz, so the bridge is not flooded.
         assert!(MIN_SEND_GAP >= Duration::from_micros(16_000));
