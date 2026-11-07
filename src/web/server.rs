@@ -106,10 +106,6 @@ pub struct LiveSettings {
     #[serde(default = "crate::config::default_strobe_hz")]
     #[schema(minimum = 2, maximum = 12.5, default = 10.0)]
     pub strobe_hz: f32,
-    /// VtHistogram preset: -1 = driver default, 0-3 = explicit (3 is experimental, 14 zones).
-    #[serde(default = "default_histogram_preset")]
-    #[schema(minimum = -1, maximum = 3, default = -1)]
-    pub histogram_preset: i8,
     pub use_xy_gamut: bool,
     pub letterbox_detection: bool,
     pub hdr_tone_mapping: bool,
@@ -131,10 +127,6 @@ fn default_output_trim() -> f32 {
 
 fn default_true() -> bool {
     true
-}
-
-fn default_histogram_preset() -> i8 {
-    -1
 }
 
 fn default_smoothing_factor() -> f32 {
@@ -199,11 +191,6 @@ impl LiveSettings {
         {
             return Err(ApiError::BadRequest(
                 "strobe_hz must be between 2 and 12.5".to_string(),
-            ));
-        }
-        if !(-1..=3).contains(&self.histogram_preset) {
-            return Err(ApiError::BadRequest(
-                "histogram_preset must be -1 (driver default) or 0 to 3".to_string(),
             ));
         }
         if !(4..=64).contains(&self.max_color_step) && self.max_color_step != u8::MAX {
@@ -1887,7 +1874,6 @@ mod tests {
             strobe_boost: false,
             dynamic_response: false,
             strobe_hz: crate::config::default_strobe_hz(),
-            histogram_preset: -1,
             use_xy_gamut: false,
             letterbox_detection: true,
             hdr_tone_mapping: false,
@@ -2724,11 +2710,6 @@ mod tests {
         for (hz, ok) in [(2.0, true), (12.5, true), (1.0, false), (20.0, false)] {
             input.strobe_hz = hz;
             assert_eq!(input.validate().is_ok(), ok, "strobe_hz {hz}");
-        }
-        input.strobe_hz = 10.0;
-        for (preset, ok) in [(-1, true), (0, true), (3, true), (4, false), (-2, false)] {
-            input.histogram_preset = preset;
-            assert_eq!(input.validate().is_ok(), ok, "histogram_preset {preset}");
         }
     }
 

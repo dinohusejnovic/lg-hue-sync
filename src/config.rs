@@ -199,9 +199,6 @@ pub struct Config {
     pub active_preset: Option<String>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub preset_overrides: BTreeMap<String, PresetTuning>,
-    /// Experimental VtHistogram preset (0..=3) sent after START; absent = driver default.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub histogram_preset: Option<u8>,
     /// Optional Home Assistant bridge; see `docs/home-assistant.md`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mqtt: Option<crate::mqtt::MqttConfig>,
@@ -476,7 +473,6 @@ impl Config {
             active_preset: Some("neutral".into()),
             preset_overrides: BTreeMap::new(),
             mqtt: None,
-            histogram_preset: None,
             bonjour_enabled: false,
             auto_tv_power: true,
             hue_enabled: true,

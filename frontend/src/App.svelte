@@ -15,7 +15,6 @@
     instantBundle,
     dynamicPatch,
     strobeRates,
-    histogramPresets,
     type LiveSettings,
   } from './lib/settings';
   import Segmented from './lib/Segmented.svelte';
@@ -38,63 +37,76 @@
     title: 'Response controls',
     text: 'Touch or focus a fader to see what it changes.',
   });
-  let presetHelp = $state('Combine colour, response and spatial blending independently.');
+  let presetHelp = $state(
+    'Pick a colour style, how fast the lights react, and how much neighbouring lights blend. Each choice is independent. Tap an option to see what it does.',
+  );
   let settings = $derived(model.settings);
   const responseOptions = [
-    { value: 'low', label: 'Slow', help: 'Gentler motion and smaller scene-change steps.' },
+    {
+      value: 'low',
+      label: 'Slow',
+      help: 'Lights drift slowly from colour to colour and scene cuts become soft fades. Relaxing and easy on the eyes, but the room visibly lags behind fast action.',
+    },
     {
       value: 'default',
       label: 'Default',
-      help: 'Balanced responsiveness and scene-change limiting.',
+      help: 'Lights follow the picture closely with a short smooth glide, and hard cuts or flashes are softened into quick fades.',
     },
-    { value: 'fast', label: 'Fast', help: 'Faster transitions and larger scene-change steps.' },
+    {
+      value: 'fast',
+      label: 'Fast',
+      help: 'Lights keep up with quick camera moves and cuts with only slight smoothing. Lively, with occasional flicker on busy scenes.',
+    },
     {
       value: 'instant',
       label: 'Instant',
-      help: 'Lowest delay: no smoothing, step limit or black hold; instant cuts and strobe boost on.',
+      help: 'Lights change as soon as the TV reports a new picture: no smoothing, no speed limit, no pause on black screens, and strobe boost on. The most responsive and the most flashy; not for photosensitive viewers.',
     },
     {
       value: 'dynamic',
       label: 'Dynamic',
-      help: 'Follows the energy on screen: smooth during calm pans and breakdowns, Instant-like with strobes when the action picks up.',
+      help: 'Changes with the content: smooth and calm during slow scenes, switching to Instant-style reactions and strobe boost when the screen gets busy, such as concerts, action or sport.',
     },
   ];
   const blendOptions = [
     {
       value: 'local',
       label: 'Local',
-      help: 'Only the light’s own screen region, without neighbour blending.',
+      help: 'Every light shows only its own part of the screen. The sharpest, most directional effect: a red car on the left lights only the left side.',
     },
     {
       value: 'balanced',
       label: 'Balanced',
-      help: 'Mix 15% of nearby regions for gentle spatial transitions.',
+      help: 'Each light takes a little colour from its neighbours, so colours still move around the room but the edges are less abrupt.',
     },
     {
       value: 'soft',
       label: 'Soft',
-      help: 'Mix 30% of nearby regions for a more unified ambient wash.',
+      help: 'Lights share much more colour with their neighbours, so the room glows more evenly with less left/right contrast.',
     },
   ];
+  const depthIntro =
+    'Lights you placed further back in the room (in the Hue app’s entertainment area) can watch a wider part of the screen than lights near the TV.';
   const depthOptions = [
     {
       value: '0',
       label: 'Off',
-      help: 'Keep the same base sampling footprint at every room depth.',
+      help: 'Every light watches a same-sized patch of the screen (a quarter of its width) around its position, wherever it sits in the room.',
     },
     {
       value: '0.5',
       label: 'Mild',
-      help: 'Gently widen sampling toward the rear of the room, up to 31.25% before clipping.',
+      help: 'Lights behind you watch a somewhat wider patch (up to about a third of the screen), so they show a steadier blend of colours while lights by the TV stay precise.',
     },
     {
       value: '1',
       label: 'Strong',
-      help: 'Widen sampling toward the rear of the room, capped at 37.5% before clipping.',
+      help: 'Lights behind you watch a much wider patch, so the back of the room shows the overall mood of the scene rather than specific details.',
     },
   ];
-  let depthHelp = $state(
-    'Changes sampling size using Hue room depth; keeps channel positions unchanged.',
+  let depthHelp = $state(depthIntro);
+  let strobeHelp = $state(
+    'How fast the lights flash while strobe boost has detected a strobe on screen.',
   );
   const tabs = [
     ['tuning', 'Tuning'],
@@ -380,12 +392,12 @@
             value={String(settings?.depth_influence ?? 0.5)}
             disabled={!settings || model.busy}
             onchange={(value) => model.patch({ depth_influence: Number(value) })}
-            onhelp={(text) => (depthHelp = text)}
+            onhelp={(text) => (depthHelp = `${depthIntro} ${text}`)}
           />
           <p class="muted">{depthHelp}</p>
           <SettingToggle
             title="Direct RGB mode"
-            description="Maximum Hue brightness and punch; off uses CIE 1931 xy."
+            description="On: Hue lights get the strongest brightness and the most punchy colours, though some shades (especially skin tones and oranges) may not match the screen exactly. Off: colours match the screen more faithfully, a little dimmer."
             checked={settings ? !settings.use_xy_gamut : false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ use_xy_gamut: !checked })}
@@ -393,7 +405,7 @@
 
           <SettingToggle
             title="Strobe boost"
-            description="When the video strobes, flash the lights at the rate below. The TV's histogram only refreshes ~10×/s, so fast strobes would otherwise blur into a slow flicker. Avoid with photosensitive viewers."
+            description="When the picture strobes (concert lights, lightning, muzzle flashes), the lights flash along at the rate below. Without it, fast strobes look like a slow, uneven flicker, because this TV only reports new screen colours about 10 times a second. Not for photosensitive viewers."
             checked={settings?.strobe_boost ?? false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ strobe_boost: checked })}
@@ -403,26 +415,18 @@
             options={strobeRates.map((hz) => ({
               value: String(hz),
               label: `${hz} Hz`,
-              help: `Flash the lights ${hz} times per second while a strobe is detected.`,
+              help: `Flash the lights ${hz} times per second while a strobe is on screen. Higher looks more frantic; lower is easier on the eyes.`,
             }))}
             value={String(settings?.strobe_hz ?? 10)}
             disabled={!settings || model.busy || !settings.strobe_boost}
             onchange={(value) => model.patch({ strobe_hz: Number(value) })}
-            onhelp={(text) => (depthHelp = text)}
+            onhelp={(text) => (strobeHelp = text)}
           />
-          <Segmented
-            label="Histogram preset"
-            options={histogramPresets}
-            value={String(settings?.histogram_preset ?? -1)}
-            disabled={!settings || model.busy}
-            onchange={(value) => model.patch({ histogram_preset: Number(value) })}
-            onhelp={(text) => (depthHelp = text)}
-          />
-          <p class="muted">{depthHelp}</p>
+          <p class="muted">{strobeHelp}</p>
 
           <SettingToggle
             title="Gentle room lights"
-            description="Slower, steadier response for single-channel Hue bulbs. Off follows the screen as fast as the gradients."
+            description="Ordinary Hue bulbs and lamps (anything that is not a gradient strip) change more slowly and smoothly, and small bright details don’t make them jump. They set the mood while gradient strips and Nanoleaf follow the action. Off: bulbs react as quickly as everything else."
             checked={settings?.gentle_room_lights ?? true}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ gentle_room_lights: checked })}
@@ -430,7 +434,7 @@
 
           <SettingToggle
             title="Instant scene cuts"
-            description="Hard cuts land in one frame instead of ramping. This removes the flash-safety limit: strobing content will strobe the room. Avoid with photosensitive viewers."
+            description="When the film cuts to a completely different shot (a dark room to a bright beach), the lights jump straight to the new colours instead of fading over a fraction of a second. Only matters while Scene limit is on; Instant already removes that limit. Rapid cuts and flashes will flash the room, so not for photosensitive viewers."
             checked={settings?.instant_scene_cuts ?? false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ instant_scene_cuts: checked })}
@@ -438,7 +442,7 @@
 
           <SettingToggle
             title="Letterbox compensation"
-            description="Sample active video inside black bars."
+            description="For films with black bars above and below (or at the sides), the lights read colours from the picture itself, so lights near the bars don’t go dark."
             checked={settings?.letterbox_detection ?? false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ letterbox_detection: checked })}
@@ -446,7 +450,7 @@
 
           <SettingToggle
             title="Midtone lift (legacy)"
-            description="Legacy brightness curve; not HDR correction."
+            description="Brightens dark and medium scenes and softens very bright ones, so the room stays more evenly lit. Older option, not HDR processing; Gamma below 1 gives a similar, more controllable result."
             checked={settings?.hdr_tone_mapping ?? false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ hdr_tone_mapping: checked })}

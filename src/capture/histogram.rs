@@ -121,12 +121,9 @@ const IOCTL_SET: libc::c_ulong = 0xC0185648;
 const CMD_START: u32 = 0x00982a14;
 const CMD_GET_DATA: u32 = 0x00982a16;
 const CMD_STOP: u32 = 0x00982a17;
-/// `VtHistogram::setPresetMode` (via `setPresetHistogram(0..=3)`): the value goes
-/// in the inner argument's fourth word. Library zone table: {16, 16, 16, 14}.
-const CMD_SET_PRESET: u32 = 0x00982a15;
-
-/// Optional preset applied after START; -1 leaves the driver default (library behaviour).
-pub static PRESET: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
+// `VtHistogram::setPresetMode` (command 0x00982a15, presets 0..=3, library zone
+// table {16, 16, 16, 14}) is deliberately not used: measured on the C5, every
+// preset refreshes at the same ~10 Hz and preset 3's 14-zone layout misplaces colours.
 
 /// Fixed pixel-sample counts per zone per read; used to detect a stalled or
 /// blank histogram source (all-zero payload) and for area sanity checks.
@@ -245,13 +242,6 @@ impl HistogramCapture {
             epoch: Instant::now(),
         };
         capture.start().context("start histogram capture")?;
-        let preset = PRESET.load(Ordering::Relaxed);
-        if (0..=3).contains(&preset) {
-            let ret = capture
-                .control(CMD_SET_PRESET, 0, preset as u32)
-                .context("set histogram preset")?;
-            info!("[+] Histogram preset {preset} applied (ioctl returned {ret}).");
-        }
         // Layout probe: the zone geometry and sample-count constants were
         // calibrated on webOS 24/25 hardware. If this device reports a
         // different fixed total per zone, the layout constants would be wrong
@@ -268,17 +258,6 @@ impl HistogramCapture {
             }
             if !capture.read_histograms() {
                 continue;
-            }
-            if preset == 3 {
-                // Experimental: the library's preset table gives 14 zones here. Our
-                // 16-zone geometry does not match, so colours are spatially wrong;
-                // this exists only to measure the preset's refresh rate.
-                let live = capture.last_totals.iter().filter(|t| t[0] > 0).count();
-                tracing::warn!(
-                    "[!] Histogram preset 3 (experimental): {live} zones report samples; \
-                     zone geometry is uncalibrated, colours will be misplaced."
-                );
-                return Ok(capture);
             }
             layout = capture.check_layout();
             if layout.is_ok() {

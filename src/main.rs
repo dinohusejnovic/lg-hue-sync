@@ -635,9 +635,6 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     }
 
     // 3. Initialize capture
-    if let Some(preset) = config.histogram_preset {
-        crate::capture::histogram::PRESET.store(preset.min(3) as i32, Ordering::Relaxed);
-    }
     let mut capture: Box<dyn ScreenCapture> = if pipeline_should_run {
         create_capture(config.capture_width, config.capture_height)
     } else {
@@ -708,9 +705,6 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
         strobe_boost: config.strobe_boost,
         dynamic_response: config.dynamic_response,
         strobe_hz: config.strobe_hz,
-        histogram_preset: config
-            .histogram_preset
-            .map_or(-1, |preset| preset.min(3) as i8),
         use_xy_gamut: config.use_xy_gamut,
         letterbox_detection: config.letterbox_detection,
         hdr_tone_mapping: config.hdr_tone_mapping,
@@ -1250,12 +1244,6 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             if !dynamic_on {
                 energy_meter.reset();
             }
-            // A preset change needs a fresh START on /dev/video60: restart capture.
-            let preset = i32::from(live_st.histogram_preset.clamp(-1, 3));
-            if crate::capture::histogram::PRESET.swap(preset, Ordering::Relaxed) != preset {
-                info!("Histogram preset changed to {preset}; restarting capture");
-                pending_commands.restart = true;
-            }
             info!(
                 "Applied live settings: Hue={:.1}x, Nanoleaf={:.1}x, saturation={:.1}x, smoothing={:.2}, xy_mode={}",
                 current_hue_brightness,
@@ -1293,8 +1281,6 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 save_cfg.strobe_boost = live_st.strobe_boost;
                 save_cfg.dynamic_response = live_st.dynamic_response;
                 save_cfg.strobe_hz = live_st.strobe_hz;
-                save_cfg.histogram_preset =
-                    (live_st.histogram_preset >= 0).then_some(live_st.histogram_preset as u8);
                 save_cfg.use_xy_gamut = live_st.use_xy_gamut;
                 save_cfg.letterbox_detection = live_st.letterbox_detection;
                 save_cfg.hdr_tone_mapping = live_st.hdr_tone_mapping;

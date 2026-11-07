@@ -19,7 +19,6 @@ export interface LiveSettings {
   strobe_boost: boolean;
   dynamic_response: boolean;
   strobe_hz: number;
-  histogram_preset: number;
   use_xy_gamut: boolean;
   letterbox_detection: boolean;
   hdr_tone_mapping: boolean;
@@ -54,7 +53,6 @@ export const initialSettings: LiveSettings = {
   strobe_boost: false,
   dynamic_response: false,
   strobe_hz: 10,
-  histogram_preset: -1,
   use_xy_gamut: false,
   letterbox_detection: true,
   hdr_tone_mapping: false,
@@ -91,73 +89,73 @@ export const faders: {
     label: 'Brightness',
     stops: [0.5, 1, 1.5, 2, 2.5],
     format: (v) => `${Number(v.toFixed(2))}×`,
-    help: 'Scales shared lighting brightness; device output trims remain independent.',
+    help: 'How bright the lights get for a given picture. 1× matches the screen; higher makes the room glow brighter in dim scenes, lower keeps it subtle. The Hue and Nanoleaf trims on the Devices tab adjust each set of lights on top of this.',
   },
   {
     key: 'saturation_boost',
     label: 'Saturation',
     stops: [0.5, 1, 1.5, 2, 2.5],
     format: (v) => `${Number(v.toFixed(2))}×`,
-    help: 'Below 1 reduces colour intensity; 1 is unchanged. Higher values push colours towards full saturation.',
+    help: 'How rich the colours are. Below 1× they drift towards white for a softer wash; 1× matches the screen; above 1× pastel scenes turn into bold, deep colours.',
   },
   {
     key: 'peak_weight',
     label: 'Highlights',
     stops: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
     format: (v) => `${Math.round(v * 100)}%`,
-    help: 'Weights bright highlights more strongly than average screen colour. The frozen colour preview does not simulate peak sampling.',
+    help: 'How much small bright details pull on a light. At 0% a light shows the average colour of its part of the screen, so a candle in a dark room barely registers. Higher values let explosions, lamps and sparks light the room even when they fill only a small area. (The frozen preview does not show this.)',
   },
   {
     key: 'spatial_blend',
     label: 'Blend',
     stops: [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5],
     format: (v) => `${Math.round(v * 100)}%`,
-    help: 'Mixes neighbouring screen regions with local colour. Black regions remain off. The preview overlay shows sampling geometry, not this mixing.',
+    help: 'How much each light borrows from the lights next to it. 0% keeps every light true to its own part of the screen, which is sharper and more dramatic. Higher values make neighbouring lights look alike, for a calmer, more unified glow. Lights over black areas stay off either way.',
   },
   {
     key: 'gamma',
     label: 'Gamma',
     stops: [0.5, 0.6, 0.7, 0.85, 1, 1.2, 1.4, 1.7, 2],
     format: (v) => v.toFixed(2),
-    help: 'Above 1 darkens midtones; below 1 lifts them. Neutral is 1.',
+    help: 'Contrast of the lighting. Above 1 dims medium-bright scenes while keeping bright ones bright, so the room gets moodier and only really lights up for bright moments. Below 1 lifts dim scenes so the room stays lit more of the time. 1 is neutral.',
   },
   {
     key: 'smoothing_factor',
     label: 'Response',
     stops: [0.05, 0.08, 0.12, 0.18, 0.25, 0.35, 0.5, 0.65, 0.8, 1],
     format: (v) => `${Math.round(v * 100)}%`,
-    help: 'Higher values follow colour changes faster; 100% removes temporal smoothing. Moving this fader makes rise and fall response equal.',
+    help: 'How quickly the lights catch up with the picture. Low values glide slowly between colours: relaxing, but they lag behind fast action. High values react almost immediately; 100% has no smoothing at all, which can look flickery on busy scenes.',
   },
   {
     key: 'max_color_step',
     label: 'Scene limit',
     stops: [4, 6, 8, 12, 16, 24, 32, 48, 64, 255],
     format: (v) => (v >= 255 ? 'Off' : `${v} steps`),
-    help: 'Maximum RGB component change per 1/30 second, including scene cuts. Lower values produce gentler transitions; Off lets the lights follow strobes.',
+    help: 'A speed limit on how far a light may change colour or brightness in a split second. Low values turn hard cuts and flashes into short fades, which is easier on the eyes and safer for photosensitive viewers. Off lets the lights jump and flash with the picture.',
   },
   {
     key: 'noise_gate_threshold',
     label: 'Black gate',
     stops: [0, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.06],
     format: (v) => `${Number((v * 100).toFixed(1))}%`,
-    help: 'Treats very dark screen regions as black. Strict black turns those lights fully off.',
+    help: 'How dark a part of the screen must be before its light switches off. Higher values keep lights off during dark scenes, credits and black bars instead of glowing a dim muddy colour; set it too high and dim scenes lose their lighting. With Strict black on, those lights snap off at once instead of fading out.',
   },
 ];
 export const colourModes = [
   {
     value: 'softColor',
     label: 'Soft',
-    help: 'Subdued saturation, reduced intensity and gentle highlights.',
+    help: 'Calmer, paler, dimmer colours with little reaction to bright highlights. Good for background ambience.',
   },
   {
     value: 'neutral',
     label: 'Default',
-    help: 'Neutral saturation, brightness and gamma with balanced highlights.',
+    help: 'Colours and brightness that match the screen as closely as possible.',
   },
   {
     value: 'vividColor',
     label: 'Vivid',
-    help: 'Richer saturation, stronger highlights and deeper contrast.',
+    help: 'Deeper colours, punchier highlights and more contrast between dark and bright scenes. Good for games and animation.',
   },
 ];
 export const responseModes = {
@@ -175,21 +173,6 @@ export const instantBundle = {
   strobe_boost: true,
 } satisfies Partial<LiveSettings>;
 export const strobeRates = [6, 8, 10, 12];
-export const histogramPresets = [
-  {
-    value: '-1',
-    label: 'Default',
-    help: 'Driver default. Measured on the C5: same ~10 Hz refresh as every preset.',
-  },
-  { value: '0', label: '0', help: 'Preset 0: 16 zones, ~10 Hz refresh.' },
-  { value: '1', label: '1', help: 'Preset 1: 16 zones, ~10 Hz refresh.' },
-  { value: '2', label: '2', help: 'Preset 2: 16 zones, ~10 Hz refresh.' },
-  {
-    value: '3',
-    label: '3 (test)',
-    help: 'Experimental: 14-zone layout our zone map does not match, so colours land in the wrong places. ~10 Hz.',
-  },
-];
 export const blendModes = { local: 0, balanced: 0.15, soft: 0.3 } as const;
 export function nearestStop(value: number, stops: readonly number[]) {
   return stops.reduce(
