@@ -85,6 +85,11 @@ class BuildHbcPackage(unittest.TestCase):
         self.assertIn("org.webosbrew.hbchannel.service/exec", page)
         self.assertIn("/payload/install.sh", page)
 
+    def test_boot_hook_runs_the_installer_beside_it(self):
+        hook = (ROOT / "scripts" / "tv" / "50-lg-hue-sync.sh").read_text()
+        self.assertIn('readlink -f "$0"', hook)
+        self.assertIn('sh "$HERE/install.sh"', hook)
+
 
 if __name__ == "__main__":
     unittest.main()

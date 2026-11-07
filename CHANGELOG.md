@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-11-07
+
+### Fixed
+- The Homebrew Channel app hung on "Starting the lighting service". The daemon's Luna permission manifest was written under the app's own id, replacing the manifest the TV creates for the app, so the app could no longer call the Homebrew Channel. The daemon's files are now named `org.webosbrew.lg-hue-sync.daemon`, and provisioning removes the old files and restores the app's manifest.
+- On a Homebrew Channel install, the boot hook now runs the app's installer, so an updated app brings in its daemon and scripts at the next boot even before it is opened.
+
 ## [1.2.0] - 2026-11-07
 
 ### Added

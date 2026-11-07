@@ -29,9 +29,11 @@ rm -f /run/systemd/system/lg-hue-sync.service /etc/systemd/system/lg-hue-sync.se
 rm -f /var/lib/webosbrew/init.d/50-lg-hue-sync
 
 for root in /var/luna-service2 /var/luna-service2-dev; do
-    rm -f "$root/manifests.d/org.webosbrew.lg-hue-sync.json"
-    rm -f "$root/roles.d/org.webosbrew.lg-hue-sync.json"
-    rm -f "$root/client-permissions.d/org.webosbrew.lg-hue-sync.json"
+    for name in org.webosbrew.lg-hue-sync.daemon org.webosbrew.lg-hue-sync; do
+        rm -f "$root/manifests.d/$name.json"
+        rm -f "$root/roles.d/$name.json"
+        rm -f "$root/client-permissions.d/$name.json"
+    done
 done
 ls-control scan-services 2>/dev/null || true
 
