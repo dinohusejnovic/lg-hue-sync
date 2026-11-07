@@ -59,7 +59,7 @@
           genre.age === null ? unavailable : `${Math.floor(genre.age / 1000)} seconds ago`,
         ],
       ],
-      note: 'Read-only LG cached scores, not confidence percentages. Inference freshness is unknown. This panel does not enable LG AI or adjust lighting.',
+      note: 'Scores cached by LG’s own software. They are not confidence percentages, and how recent they are is unknown. Showing them does not switch on LG’s AI features or change the lighting.',
     },
     {
       id: 'display',
@@ -73,7 +73,7 @@
         ['Display muted', diagnosticValue(display?.muted)],
         ['Timing locked', diagnosticValue(display?.locked)],
       ],
-      note: 'Refresh rate is reported by the display driver, independently of content frame rate. Video plane size describes placement after scaling, not measured panel resolution.',
+      note: 'The display driver reports the refresh rate, which can differ from the video’s frame rate. Video plane size is where the picture sits after scaling, which can differ from the panel’s resolution.',
     },
     {
       id: 'video',
@@ -101,7 +101,7 @@
         ['Scan', diagnosticValue(player?.scan_type)],
         ['Dynamic range', dynamicRange(player?.hdr)],
       ],
-      note: 'Shown when the main video plane uses the TV decoder. Other app rendering paths may not expose these details.',
+      note: 'Shown when the TV’s own decoder plays the video. Some apps draw video another way and do not report these details.',
     },
     {
       id: 'output',
@@ -111,7 +111,7 @@
         ['Return channel', diagnosticValue(output?.arc_state)],
         ['Passthrough', diagnosticValue(output?.passthrough)],
       ],
-      note: 'Output status is separate from incoming audio and receiver capabilities.',
+      note: 'What the TV is sending, which can differ from the incoming audio and from what the receiver supports.',
     },
   ]);
 </script>

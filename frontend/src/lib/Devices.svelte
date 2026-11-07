@@ -92,7 +92,7 @@
   <div class="section-body">
     <SettingToggle
       title="Follow TV power"
-      description="Pause lights in standby and resume when the TV turns on."
+      description="Stop the lights when the TV goes to standby and start them again when it turns on."
       checked={settings?.auto_tv_power ?? true}
       disabled={!settings || model.busy}
       onchange={(checked) => model.patch({ auto_tv_power: checked })}
@@ -139,7 +139,7 @@
       <p class="muted" role="status">{areaMessage}</p>
       <SettingToggle
         title="Hue Entertainment sync"
-        description="Release Hue lights to the Hue app while Nanoleaf can keep running."
+        description="Turn off to hand the Hue lights back to the Hue app. Nanoleaf keeps running."
         checked={settings?.hue_sync_enabled ?? false}
         disabled={!settings || model.busy}
         onchange={(checked) => model.patch({ hue_sync_enabled: checked })}
@@ -149,7 +149,7 @@
           value={settings.hue_output_brightness}
           stops={trimStops}
           format={(v) => `${v.toFixed(2)}×`}
-          help="Final Hue brightness trim; independent of Nanoleaf."
+          help="Overall brightness of the Hue lights only."
           vertical={false}
           onchange={(v) => model.patch({ hue_output_brightness: v })}
           onhelp={() => {}}
@@ -179,7 +179,7 @@
       </p>
       <SettingToggle
         title="Nanoleaf 4D sync"
-        description="Stop TV-driven 4D updates while Hue can keep running."
+        description="Turn off to stop sending the screen to the Nanoleaf 4D. Hue keeps running."
         checked={settings?.nanoleaf_sync_enabled ?? false}
         disabled={!settings || model.busy}
         onchange={(checked) => model.patch({ nanoleaf_sync_enabled: checked })}
@@ -189,7 +189,7 @@
           value={settings.nanoleaf_output_brightness}
           stops={trimStops}
           format={(v) => `${v.toFixed(2)}×`}
-          help="Balances 4D output without changing screen sampling."
+          help="Overall brightness of the Nanoleaf lights only."
           vertical={false}
           onchange={(v) => model.patch({ nanoleaf_output_brightness: v })}
           onhelp={() => {}}
@@ -258,7 +258,7 @@
   <div class="section-body">
     <SettingToggle
       title="Bonjour discovery"
-      description="Advertise dashboard and API on the local network. Changes save without a restart."
+      description="Let other devices on your network find this dashboard (Bonjour). Takes effect immediately."
       checked={model.status?.bonjour_enabled ?? false}
       disabled={!model.status || model.busy}
       onchange={(checked) => run('/api/bonjour', { enabled: checked })}
@@ -267,7 +267,7 @@
       variant="secondary"
       disabled={model.busy}
       onclick={() => {
-        if (confirm('Restart capture and lighting pipelines? Output pauses briefly.'))
+        if (confirm('Restart screen capture and the lights? They pause for a moment.'))
           void run('/api/restart');
       }}>Restart pipeline</Button
     >

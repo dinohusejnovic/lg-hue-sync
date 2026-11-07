@@ -22,9 +22,9 @@
 <fieldset class="black-frame-settings">
   <legend>Black-screen transitions</legend>
   <p class="muted">
-    Hold the last colours, then fade when the whole screen is nearly black. Returning picture
-    cancels the fade. Strict black still applies to individual dark regions. Set both times to zero
-    to disable.
+    When the whole screen goes nearly black, the lights keep their last colours for a moment, then
+    fade out. They come back as soon as the picture does. Strict black still switches off lights
+    over dark parts of the screen. Set both times to zero to turn this off.
   </p>
   <Fader
     label="Black-screen hold"

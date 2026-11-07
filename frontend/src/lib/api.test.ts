@@ -44,7 +44,8 @@ describe('settings migration invariants', () => {
 describe('request', () => {
   test('a dropped connection becomes a retryable ConnectionError, not "Failed to fetch"', async () => {
     const original = globalThis.fetch;
-    globalThis.fetch = (() => Promise.reject(new TypeError('Failed to fetch'))) as typeof fetch;
+    globalThis.fetch = (() =>
+      Promise.reject(new TypeError('Failed to fetch'))) as unknown as typeof fetch;
     try {
       const error = await request('/api/status').catch((e: unknown) => e);
       expect(error).toBeInstanceOf(ConnectionError);

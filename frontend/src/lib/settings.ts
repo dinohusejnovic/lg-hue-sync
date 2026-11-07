@@ -89,63 +89,63 @@ export const faders: {
     label: 'Brightness',
     stops: [0.5, 1, 1.5, 2, 2.5],
     format: (v) => `${Number(v.toFixed(2))}×`,
-    help: 'How bright the lights get for a given picture. 1× matches the screen; higher makes the room glow brighter in dim scenes, lower keeps it subtle. The Hue and Nanoleaf trims on the Devices tab adjust each set of lights on top of this.',
+    help: 'How bright the lights get for a given picture. At 1× they match the screen. Higher makes the room brighter in dim scenes, and lower keeps it subtle. The Hue and Nanoleaf trims on the Devices tab adjust each set of lights on top of this.',
   },
   {
     key: 'saturation_boost',
     label: 'Saturation',
     stops: [0.5, 1, 1.5, 2, 2.5],
     format: (v) => `${Number(v.toFixed(2))}×`,
-    help: 'How rich the colours are. Below 1× they drift towards white for a softer wash; 1× matches the screen; above 1× pastel scenes turn into bold, deep colours.',
+    help: 'How rich the colours are. Below 1× they fade towards white, 1× matches the screen, and above 1× pastel scenes turn into deep colours.',
   },
   {
     key: 'peak_weight',
     label: 'Highlights',
     stops: [0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1],
     format: (v) => `${Math.round(v * 100)}%`,
-    help: 'How much small bright details pull on a light. At 0% a light shows the average colour of its part of the screen, so a candle in a dark room barely registers. Higher values let explosions, lamps and sparks light the room even when they fill only a small area. (The frozen preview does not show this.)',
+    help: 'How much small bright details pull on a light. At 0% a light shows the average colour of its part of the screen, so a candle in a dark room barely registers. Higher values let small bright things, like an explosion or a lamp, light the room. (The frozen preview does not show this.)',
   },
   {
     key: 'spatial_blend',
     label: 'Blend',
     stops: [0, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5],
     format: (v) => `${Math.round(v * 100)}%`,
-    help: 'How much each light borrows from the lights next to it. 0% keeps every light true to its own part of the screen, which is sharper and more dramatic. Higher values make neighbouring lights look alike, for a calmer, more unified glow. Lights over black areas stay off either way.',
+    help: 'How much each light borrows from the lights next to it. At 0% every light shows only its own part of the screen, which is the sharpest look. Higher values make neighbouring lights look alike and the room calmer. Lights over black areas stay off either way.',
   },
   {
     key: 'gamma',
     label: 'Gamma',
     stops: [0.5, 0.6, 0.7, 0.85, 1, 1.2, 1.4, 1.7, 2],
     format: (v) => v.toFixed(2),
-    help: 'Contrast of the lighting. Above 1 dims medium-bright scenes while keeping bright ones bright, so the room gets moodier and only really lights up for bright moments. Below 1 lifts dim scenes so the room stays lit more of the time. 1 is neutral.',
+    help: 'Contrast of the lighting. Above 1, medium scenes get dimmer while bright ones stay bright, so the room is moodier and lights up mainly for bright moments. Below 1, dim scenes get brighter and the room stays lit more of the time. 1 is neutral.',
   },
   {
     key: 'smoothing_factor',
     label: 'Response',
     stops: [0.05, 0.08, 0.12, 0.18, 0.25, 0.35, 0.5, 0.65, 0.8, 1],
     format: (v) => `${Math.round(v * 100)}%`,
-    help: 'How quickly the lights catch up with the picture. Low values glide slowly between colours: relaxing, but they lag behind fast action. High values react almost immediately; 100% has no smoothing at all, which can look flickery on busy scenes.',
+    help: 'How quickly the lights catch up with the picture. Low values glide slowly between colours and lag behind fast action. High values react almost immediately, and 100% turns smoothing off, which can flicker on busy scenes.',
   },
   {
     key: 'max_color_step',
     label: 'Scene limit',
     stops: [4, 6, 8, 12, 16, 24, 32, 48, 64, 255],
     format: (v) => (v >= 255 ? 'Off' : `${v} steps`),
-    help: 'A speed limit on how far a light may change colour or brightness in a split second. Low values turn hard cuts and flashes into short fades, which is easier on the eyes and safer for photosensitive viewers. Off lets the lights jump and flash with the picture.',
+    help: 'A speed limit on how far a light can change colour or brightness in a split second. Low values turn hard cuts and flashes into short fades, which is easier on the eyes and safer for anyone sensitive to flashing light. Off lets the lights jump and flash with the picture.',
   },
   {
     key: 'noise_gate_threshold',
     label: 'Black gate',
     stops: [0, 0.005, 0.01, 0.015, 0.02, 0.03, 0.04, 0.06],
     format: (v) => `${Number((v * 100).toFixed(1))}%`,
-    help: 'How dark a part of the screen must be before its light switches off. Higher values keep lights off during dark scenes, credits and black bars instead of glowing a dim muddy colour; set it too high and dim scenes lose their lighting. With Strict black on, those lights snap off at once instead of fading out.',
+    help: 'How dark a part of the screen must be before its light switches off. Raise it if lights glow a dim, muddy colour during dark scenes, credits or black bars. Set too high, dim scenes lose their lighting. With Strict black on, those lights switch off at once; otherwise they fade out.',
   },
 ];
 export const colourModes = [
   {
     value: 'softColor',
     label: 'Soft',
-    help: 'Calmer, paler, dimmer colours with little reaction to bright highlights. Good for background ambience.',
+    help: 'Paler, dimmer colours that barely react to bright highlights. Suits background lighting.',
   },
   {
     value: 'neutral',
@@ -155,7 +155,7 @@ export const colourModes = [
   {
     value: 'vividColor',
     label: 'Vivid',
-    help: 'Deeper colours, punchier highlights and more contrast between dark and bright scenes. Good for games and animation.',
+    help: 'Deeper colours and stronger highlights, with more contrast between dark and bright scenes. Suits games and animation.',
   },
 ];
 export const responseModes = {

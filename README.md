@@ -1,11 +1,24 @@
 # lg-hue-sync
 
 [![Rust](https://img.shields.io/badge/Rust-2021-orange.svg)](https://www.rust-lang.org/)
-[![CI](https://github.com/adeze/lg-hue-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/adeze/lg-hue-sync/actions/workflows/ci.yml)
+[![CI](https://github.com/dinohusejnovic/lg-hue-sync/actions/workflows/ci.yml/badge.svg)](https://github.com/dinohusejnovic/lg-hue-sync/actions/workflows/ci.yml)
 [![webOS](https://img.shields.io/badge/webOS-rooted%205%2F6-blue.svg)](https://www.webosbrew.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Native ambient-light synchronization for rooted LG webOS TVs. A Rust daemon captures the displayed image, derives spatial colours, and streams them to Philips Hue Entertainment and Nanoleaf 4D. A responsive LAN dashboard provides pairing, calibration, presets, and independent output controls.
+Ambient lighting for rooted LG webOS TVs. A Rust daemon on the TV reads the colours on screen and streams them to Philips Hue Entertainment areas and Nanoleaf 4D strips. A dashboard on your local network handles pairing, calibration, presets and separate controls for Hue and Nanoleaf.
+
+This is a fork of [adeze/lg-hue-sync](https://github.com/adeze/lg-hue-sync). On webOS 24/25 it keeps syncing inside streaming apps, DRM-protected video included, by reading colour statistics from the TV's video hardware. It also reacts faster to the picture, with strobe boost and a Dynamic response mode, adds Home Assistant control over MQTT and a Magic Remote mode for the dashboard on the TV, and installs from the Homebrew Channel.
+
+## Install with the Homebrew Channel
+
+On a rooted TV with the [Homebrew Channel](https://github.com/webosbrew/webos-homebrew-channel):
+
+1. In the Homebrew Channel's settings, add this repository:
+   `https://dinohusejnovic.github.io/lg-hue-sync/api/apps.json`
+2. Install Hue & Nanoleaf Sync from the list.
+3. Open it. The first time, it takes a few seconds to install the lighting service, then opens the dashboard. Pair your Hue Bridge or Nanoleaf on the Devices tab.
+
+When the app is updated, opening it updates the service too. It never replaces a newer version you installed over SSH. Settings are kept in `/var/home/root/lg-hue-sync/config.json` and survive updates. Uninstalling the app stops the service from starting at boot; to remove its files and settings as well, run `./scripts/uninstall.sh <tv-ip>` from a computer.
 
 ## Features
 
@@ -19,8 +32,8 @@ Native ambient-light synchronization for rooted LG webOS TVs. A Rust daemon capt
 ## Limits and safety
 
 - Root access is required. Rooting can void warranties or render a TV unusable; confirm model and firmware compatibility first.
-- Capture is HDMI-only: known built-in apps and Home automatically pause capture; returning to HDMI resumes it unless manually stopped. This input policy does not detect or bypass DRM. External HDMI playback is the supported path for protected content.
-- Hue decides how physical gradient segments are grouped into Entertainment channels. This project streams the selected area's returned channels; it does not fabricate more.
+- On webOS 24/25 the VtHistogram backend reads colour statistics for 16 screen zones from the video hardware. No video frames leave the protected video path, so built-in apps, including DRM-protected playback, keep syncing. The hardware updates these statistics about 10 times a second. Other TVs use frame capture, which works only with HDMI inputs: built-in apps and Home pause capture, and switching back to HDMI resumes it unless sync was stopped by hand. Neither path detects or bypasses DRM.
+- Hue decides how the segments of a gradient light are grouped into Entertainment channels, and this project streams the channels Hue returns for the selected area.
 - LG private capture APIs and community root methods are unsupported by LG and may change with firmware.
 
 Check [cani.rootmy.tv](https://cani.rootmy.tv/) and [webOS Brew](https://github.com/webosbrew) before changing a TV.
@@ -103,7 +116,7 @@ Hue HTTPS validates the two official Hue root CAs and the saved Bridge ID. Exist
 
 ```text
 src/                 daemon, capture, colour, Hue, Nanoleaf, dashboard
-webos-app/           optional launcher/dashboard package
+webos-app/           TV app; the Homebrew Channel package also carries the daemon
 scripts/             build, provisioning, deployment, maintenance
 docs/                architecture, operations, release runbooks
 .agents/skills/      repository-specific agent workflow
@@ -111,13 +124,13 @@ docs/                architecture, operations, release runbooks
 
 Useful implementation references:
 
-- [webosbrew/native-toolchain](https://github.com/webosbrew/native-toolchain) — webOS sysroot/toolchain reference.
-- [openlgtv/buildroot-nc4](https://github.com/openlgtv/buildroot-nc4) — Buildroot source behind the community SDK, not a drop-in Rust linker fix.
-- [webosbrew/webos-userland](https://github.com/webosbrew/webos-userland/tree/main) and its [API reference](https://www.webosbrew.org/webos-userland/index.html) — community stub headers and libraries for native LG userland APIs; validate symbols and behavior on the target firmware.
-- [webosbrew/hyperhdr-webos-loader](https://github.com/webosbrew/hyperhdr-webos-loader) — app/service packaging and lifecycle reference.
-- [webosbrew/ares-cli-rs](https://github.com/webosbrew/ares-cli-rs) — packaging, install, shell, and transfer tooling.
-- [HyperHDR](https://github.com/awawa-dev/HyperHDR) — reference for colour precision, temporal smoothing, source calibration, and stage metrics; adapt only after measuring this TV's pipeline.
-- [webosbrew/apps-repo](https://github.com/webosbrew/apps-repo) — Homebrew Channel submission format.
+- [webosbrew/native-toolchain](https://github.com/webosbrew/native-toolchain): webOS sysroot/toolchain reference.
+- [openlgtv/buildroot-nc4](https://github.com/openlgtv/buildroot-nc4): Buildroot source behind the community SDK, not a drop-in Rust linker fix.
+- [webosbrew/webos-userland](https://github.com/webosbrew/webos-userland/tree/main) and its [API reference](https://www.webosbrew.org/webos-userland/index.html): community stub headers and libraries for native LG userland APIs; validate symbols and behavior on the target firmware.
+- [webosbrew/hyperhdr-webos-loader](https://github.com/webosbrew/hyperhdr-webos-loader): app/service packaging and lifecycle reference.
+- [webosbrew/ares-cli-rs](https://github.com/webosbrew/ares-cli-rs): packaging, install, shell, and transfer tooling.
+- [HyperHDR](https://github.com/awawa-dev/HyperHDR): reference for colour precision, temporal smoothing, source calibration, and stage metrics; adapt only after measuring this TV's pipeline.
+- [webosbrew/apps-repo](https://github.com/webosbrew/apps-repo): Homebrew Channel submission format.
 
 ## Contributing
 

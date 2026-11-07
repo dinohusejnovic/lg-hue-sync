@@ -45,69 +45,67 @@
     {
       value: 'low',
       label: 'Slow',
-      help: 'Lights drift slowly from colour to colour and scene cuts become soft fades. Relaxing and easy on the eyes, but the room visibly lags behind fast action.',
+      help: 'Lights drift slowly from colour to colour, and scene cuts become soft fades. It is easy on the eyes, though the room lags visibly behind fast action.',
     },
     {
       value: 'default',
       label: 'Default',
-      help: 'Lights follow the picture closely with a short smooth glide, and hard cuts or flashes are softened into quick fades.',
+      help: 'Lights follow the picture closely with a short glide, and hard cuts or flashes become quick fades.',
     },
     {
       value: 'fast',
       label: 'Fast',
-      help: 'Lights keep up with quick camera moves and cuts with only slight smoothing. Lively, with occasional flicker on busy scenes.',
+      help: 'Lights keep up with quick camera moves and cuts, with only slight smoothing. Busy scenes can flicker a little.',
     },
     {
       value: 'instant',
       label: 'Instant',
-      help: 'Lights change as soon as the TV reports a new picture: no smoothing, no speed limit, no pause on black screens, and strobe boost on. The most responsive and the most flashy; not for photosensitive viewers.',
+      help: 'Lights change as soon as the TV reports new colours, with no smoothing, no speed limit and no pause on black screens. Strobe boost is on. This is the fastest and flashiest setting. Avoid it if anyone watching is sensitive to flashing light.',
     },
     {
       value: 'dynamic',
       label: 'Dynamic',
-      help: 'Changes with the content: smooth and calm during slow scenes, switching to Instant-style reactions and strobe boost when the screen gets busy, such as concerts, action or sport.',
+      help: 'Smooth during slow scenes. When the screen gets busy, as in concerts, action or sport, the lights react like Instant and strobe boost turns on.',
     },
   ];
   const blendOptions = [
     {
       value: 'local',
       label: 'Local',
-      help: 'Every light shows only its own part of the screen. The sharpest, most directional effect: a red car on the left lights only the left side.',
+      help: 'Every light shows only its own part of the screen, so a red car on the left lights only the left side of the room.',
     },
     {
       value: 'balanced',
       label: 'Balanced',
-      help: 'Each light takes a little colour from its neighbours, so colours still move around the room but the edges are less abrupt.',
+      help: 'Each light takes a little colour from its neighbours. Colours still move around the room, with softer edges.',
     },
     {
       value: 'soft',
       label: 'Soft',
-      help: 'Lights share much more colour with their neighbours, so the room glows more evenly with less left/right contrast.',
+      help: 'Lights share much more colour with their neighbours, so the room glows more evenly from left to right.',
     },
   ];
   const depthIntro =
-    'Lights you placed further back in the room (in the Hue app’s entertainment area) can watch a wider part of the screen than lights near the TV.';
+    'Lights placed further back in the room (in the Hue app’s entertainment area) can watch a wider part of the screen than lights near the TV.';
   const depthOptions = [
     {
       value: '0',
       label: 'Off',
-      help: 'Every light watches a same-sized patch of the screen (a quarter of its width) around its position, wherever it sits in the room.',
+      help: 'Every light watches a patch a quarter of the screen wide around its position, wherever it sits in the room.',
     },
     {
       value: '0.5',
       label: 'Mild',
-      help: 'Lights behind you watch a somewhat wider patch (up to about a third of the screen), so they show a steadier blend of colours while lights by the TV stay precise.',
+      help: 'Lights behind you watch a wider patch, up to about a third of the screen, so they show a steadier blend of colours. Lights by the TV stay precise.',
     },
     {
       value: '1',
       label: 'Strong',
-      help: 'Lights behind you watch a much wider patch, so the back of the room shows the overall mood of the scene rather than specific details.',
+      help: 'Lights behind you watch a much wider patch, so the back of the room follows the overall colour of the scene.',
     },
   ];
   let depthHelp = $state(depthIntro);
-  let strobeHelp = $state(
-    'How fast the lights flash while strobe boost has detected a strobe on screen.',
-  );
+  let strobeHelp = $state('How fast the lights flash while strobe boost sees a strobe on screen.');
   const tabs = [
     ['tuning', 'Tuning'],
     ['devices', 'Devices'],
@@ -326,7 +324,7 @@
             ? 'Saving changes…'
             : model.online
               ? 'Changes saved automatically.'
-              : 'Connecting to daemon…'}
+              : 'Connecting to the TV…'}
       </p>
     </section>
     <Preview status={model.status} {settings} active={tab === 'tuning'} />
@@ -397,7 +395,7 @@
           <p class="muted">{depthHelp}</p>
           <SettingToggle
             title="Direct RGB mode"
-            description="On: Hue lights get the strongest brightness and the most punchy colours, though some shades (especially skin tones and oranges) may not match the screen exactly. Off: colours match the screen more faithfully, a little dimmer."
+            description="On, Hue lights are as bright and punchy as they go, though some shades, especially skin tones and oranges, may not match the screen exactly. Off, colours match the screen more closely and are a little dimmer."
             checked={settings ? !settings.use_xy_gamut : false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ use_xy_gamut: !checked })}
@@ -405,7 +403,7 @@
 
           <SettingToggle
             title="Strobe boost"
-            description="When the picture strobes (concert lights, lightning, muzzle flashes), the lights flash along at the rate below. Without it, fast strobes look like a slow, uneven flicker, because this TV only reports new screen colours about 10 times a second. Not for photosensitive viewers."
+            description="When the picture strobes, as with concert lights or lightning, the lights flash along at the rate below. This TV reports new screen colours only about 10 times a second, so without it fast strobes look like a slow, uneven flicker. Avoid it if anyone watching is sensitive to flashing light."
             checked={settings?.strobe_boost ?? false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ strobe_boost: checked })}
@@ -415,7 +413,7 @@
             options={strobeRates.map((hz) => ({
               value: String(hz),
               label: `${hz} Hz`,
-              help: `Flash the lights ${hz} times per second while a strobe is on screen. Higher looks more frantic; lower is easier on the eyes.`,
+              help: `Flash the lights ${hz} times per second while a strobe is on screen. Lower rates are easier on the eyes.`,
             }))}
             value={String(settings?.strobe_hz ?? 10)}
             disabled={!settings || model.busy || !settings.strobe_boost}
@@ -426,7 +424,7 @@
 
           <SettingToggle
             title="Gentle room lights"
-            description="Ordinary Hue bulbs and lamps (anything that is not a gradient strip) change more slowly and smoothly, and small bright details don’t make them jump. They set the mood while gradient strips and Nanoleaf follow the action. Off: bulbs react as quickly as everything else."
+            description="Ordinary Hue bulbs and lamps change slowly and smoothly, and small bright details don’t make them jump. Gradient strips and Nanoleaf still follow the action. Turn this off to make bulbs react as quickly as everything else."
             checked={settings?.gentle_room_lights ?? true}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ gentle_room_lights: checked })}
@@ -434,7 +432,7 @@
 
           <SettingToggle
             title="Instant scene cuts"
-            description="When the film cuts to a completely different shot (a dark room to a bright beach), the lights jump straight to the new colours instead of fading over a fraction of a second. Only matters while Scene limit is on; Instant already removes that limit. Rapid cuts and flashes will flash the room, so not for photosensitive viewers."
+            description="When a film cuts to a completely different shot, say from a dark room to a bright beach, the lights switch to the new colours at once. Otherwise they fade over a fraction of a second. This only matters while Scene limit is on; Instant already turns that limit off. Rapid cuts will flash the room. Avoid it if anyone watching is sensitive to flashing light."
             checked={settings?.instant_scene_cuts ?? false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ instant_scene_cuts: checked })}
@@ -442,7 +440,7 @@
 
           <SettingToggle
             title="Letterbox compensation"
-            description="For films with black bars above and below (or at the sides), the lights read colours from the picture itself, so lights near the bars don’t go dark."
+            description="With films that have black bars, the lights read colours from the picture between the bars, so lights near the bars don’t go dark."
             checked={settings?.letterbox_detection ?? false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ letterbox_detection: checked })}
@@ -450,7 +448,7 @@
 
           <SettingToggle
             title="Midtone lift (legacy)"
-            description="Brightens dark and medium scenes and softens very bright ones, so the room stays more evenly lit. Older option, not HDR processing; Gamma below 1 gives a similar, more controllable result."
+            description="Brightens dark and medium scenes and softens very bright ones, so the room stays more evenly lit. This is an older option and does not process HDR. Gamma below 1 does much the same with finer control."
             checked={settings?.hdr_tone_mapping ?? false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ hdr_tone_mapping: checked })}
