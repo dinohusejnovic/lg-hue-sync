@@ -78,8 +78,11 @@ if ! git -C "$PAGES" diff --cached --quiet; then
 fi
 git -C "$PAGES" push -q origin gh-pages
 
-gh api "repos/$REPO/pages" >/dev/null 2>&1 \
-    || gh api -X POST "repos/$REPO/pages" -f "source[branch]=gh-pages" -f "source[path]=/" >/dev/null
+# GitHub may enable Pages by itself when gh-pages first appears (HTTP 409 then).
+if ! gh api "repos/$REPO/pages" >/dev/null 2>&1; then
+    gh api -X POST "repos/$REPO/pages" -f "source[branch]=gh-pages" -f "source[path]=/" >/dev/null 2>&1 \
+        || gh api "repos/$REPO/pages" >/dev/null || die "could not enable GitHub Pages"
+fi
 
 echo "Published $TAG"
 echo "  Release:    https://github.com/$REPO/releases/tag/$TAG"
