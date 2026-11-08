@@ -834,10 +834,10 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
     let mut dynamic_base_hold = (config.black_frame_hold_ms, config.black_frame_fade_ms);
     let mut dynamic_params: Option<color::energy::DynamicParams> = None;
     let mut energy_meter = color::energy::EnergyMeter::default();
-    let mut strobe = color::strobe::StrobeDetector::default();
-    strobe.configure(config.strobe_boost, config.strobe_hz);
-    let mut hue_strobe = color::strobe::StrobeColors::default();
-    let mut nanoleaf_strobe = color::strobe::StrobeColors::default();
+    let mut hue_strobe = color::strobe::StrobeLights::default();
+    let mut nanoleaf_strobe = color::strobe::StrobeLights::default();
+    hue_strobe.configure(config.strobe_boost, config.strobe_hz);
+    nanoleaf_strobe.configure(config.strobe_boost, config.strobe_hz);
 
     'sync_loop: while running.load(Ordering::SeqCst) {
         pending_commands.receive(&mut command_rx);
@@ -1244,7 +1244,8 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                 ns.set_max_color_step(live_st.max_color_step);
                 ns.set_alignment(live_st.nanoleaf_alignment);
             }
-            strobe.configure(live_st.strobe_boost, live_st.strobe_hz);
+            hue_strobe.configure(live_st.strobe_boost, live_st.strobe_hz);
+            nanoleaf_strobe.configure(live_st.strobe_boost, live_st.strobe_hz);
             // Live settings just reset the samplers; Dynamic re-applies on the next frame.
             dynamic_on = live_st.dynamic_response;
             dynamic_base_hold = (live_st.black_frame_hold_ms, live_st.black_frame_fade_ms);
@@ -1606,29 +1607,20 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             .store(capture.supports_nv12_stream(), Ordering::Relaxed);
         match capture.acquire_frame() {
             Ok(frame) => {
-                // Strobe boost: one cheap mean per frame, shared by both outputs.
-                let (strobe_phase, strobe_bright) = if strobe.enabled() {
-                    // Only the histogram backend reports genuine hardware refreshes.
-                    let refreshed = histogram_refreshes.then(|| {
-                        let raw = crate::capture::histogram::RAW_REFRESHES.load(Ordering::Relaxed);
-                        std::mem::replace(&mut last_raw_refreshes, raw) != raw
-                    });
-                    let luma = frame_average(frame.data, frame.width, frame.height, frame.is_bgra)
-                        .luminance();
-                    (
-                        strobe.observe(luma, refreshed, std::time::Instant::now()),
-                        color::strobe::StrobeDetector::is_bright(luma),
-                    )
-                } else {
-                    (None, false)
-                };
+                // Strobe boost watches each light's unsmoothed colour on new
+                // hardware data; only the histogram backend reports genuine refreshes.
+                let strobe_new_data = histogram_refreshes.then(|| {
+                    let raw = crate::capture::histogram::RAW_REFRESHES.load(Ordering::Relaxed);
+                    std::mem::replace(&mut last_raw_refreshes, raw) != raw
+                });
+                let strobing = hue_strobe.active() || nanoleaf_strobe.active();
                 if dynamic_on {
                     let level = energy_meter.observe(
                         frame.data,
                         frame.width,
                         frame.height,
                         frame.is_bgra,
-                        strobe_phase.is_some(),
+                        strobing,
                         std::time::Instant::now(),
                     );
                     let params = color::energy::DynamicParams::for_level(level, dynamic_params);
@@ -1770,8 +1762,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                                 .unwrap_or(sampled_zones);
                             if calibration.is_none() {
                                 hue_strobe.apply(
-                                    strobe_phase,
-                                    strobe_bright,
+                                    &sampler.unsmoothed_colors(),
+                                    strobe_new_data,
+                                    std::time::Instant::now(),
                                     sampled_zones.iter_mut().map(|(_, color)| color),
                                 );
                             }
@@ -1872,8 +1865,9 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
                                 .unwrap_or(nl_colors);
                             if nl_calibration.is_none() {
                                 nanoleaf_strobe.apply(
-                                    strobe_phase,
-                                    strobe_bright,
+                                    &nl_sampler.unsmoothed_colors(),
+                                    strobe_new_data,
+                                    std::time::Instant::now(),
                                     nl_colors.iter_mut(),
                                 );
                             }
@@ -2066,6 +2060,7 @@ async fn run_daemon(config_path: PathBuf) -> Result<()> {
             light_update_window = tokio::time::Instant::now();
         }
 
+        color::strobe::publish_active(hue_strobe.active() || nanoleaf_strobe.active());
         settled_ticks = if tick_output && tick_unchanged {
             settled_ticks.saturating_add(1)
         } else {

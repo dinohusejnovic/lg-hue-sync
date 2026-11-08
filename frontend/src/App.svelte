@@ -105,7 +105,9 @@
     },
   ];
   let depthHelp = $state(depthIntro);
-  let strobeHelp = $state('How fast the lights flash while strobe boost sees a strobe on screen.');
+  let strobeHelp = $state(
+    'The fastest the lights flash while strobe boost sees a strobe on screen.',
+  );
   const tabs = [
     ['tuning', 'Tuning'],
     ['devices', 'Devices'],
@@ -403,7 +405,7 @@
 
           <SettingToggle
             title="Strobe boost"
-            description="When the picture strobes, as with concert lights or lightning, the lights flash along at the rate below. This TV reports new screen colours only about 10 times a second, so without it fast strobes look like a slow, uneven flicker. Avoid it if anyone watching is sensitive to flashing light."
+            description="When part of the picture strobes, as with concert lights or lightning, the lights covering that part flash along between the strobe's own dim and bright colours, as fast as the strobe up to the rate below. This TV reports new screen colours only about 10 times a second, so without it fast strobes look like a slow, uneven flicker. Avoid it if anyone watching is sensitive to flashing light."
             checked={settings?.strobe_boost ?? false}
             disabled={!settings || model.busy}
             onchange={(checked) => model.patch({ strobe_boost: checked })}
@@ -413,7 +415,7 @@
             options={strobeRates.map((hz) => ({
               value: String(hz),
               label: `${hz} Hz`,
-              help: `Flash the lights ${hz} times per second while a strobe is on screen. Lower rates are easier on the eyes.`,
+              help: `Lights flash at most ${hz} times per second; slower strobes flash at their own speed. Lower rates are easier on the eyes.`,
             }))}
             value={String(settings?.strobe_hz ?? 10)}
             disabled={!settings || model.busy || !settings.strobe_boost}

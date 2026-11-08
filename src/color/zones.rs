@@ -352,6 +352,31 @@ impl ColorProcessor {
         target
     }
 
+    /// Region colour with highlights weighted in, before gating and smoothing.
+    fn weighted(&self, mean: FloatColor, peak: FloatColor, max_luma: f32) -> FloatColor {
+        // A room bulb represents the region: sparse highlights must not turn a
+        // mostly black footprint into a bright, neutral target before black gating.
+        let peak_weight = if self.room_response && max_luma > 0.0 {
+            self.peak_weight * (mean.luminance() / max_luma).clamp(0.0, 1.0)
+        } else {
+            self.peak_weight
+        };
+        if peak_weight > 0.0 && max_luma > 0.0 {
+            mean.lerp(peak, peak_weight)
+        } else {
+            mean
+        }
+    }
+
+    /// The colour a light would show this frame with no temporal smoothing:
+    /// what strobe boost detects flashes in and replays.
+    pub fn unsmoothed(&self, mean: FloatColor, peak: FloatColor, max_luma: f32) -> FloatColor {
+        self.transform_with_gate(
+            self.weighted(mean, peak, max_luma),
+            self.noise_gate_threshold,
+        )
+    }
+
     pub fn process(
         &self,
         mean: FloatColor,
@@ -363,18 +388,7 @@ impl ColorProcessor {
     ) -> FloatColor {
         // Preserve 30 FPS tuning without treating a capture stall as one giant color jump.
         let elapsed = elapsed.min(Duration::from_millis(100));
-        // A room bulb represents the region: sparse highlights must not turn a
-        // mostly black footprint into a bright, neutral target before black gating.
-        let peak_weight = if self.room_response && max_luma > 0.0 {
-            self.peak_weight * (mean.luminance() / max_luma).clamp(0.0, 1.0)
-        } else {
-            self.peak_weight
-        };
-        let mut target = if peak_weight > 0.0 && max_luma > 0.0 {
-            mean.lerp(peak, peak_weight)
-        } else {
-            mean
-        };
+        let mut target = self.weighted(mean, peak, max_luma);
         // Require more light to leave black than to remain lit. Uniform black still stops.
         let threshold = self.noise_gate_threshold
             * if current == FloatColor::default() {
@@ -460,6 +474,8 @@ impl Default for ActiveRect {
 pub struct ZoneSampler {
     zones: Vec<LightZone>,
     smoothed_colors: Vec<FloatColor>,
+    /// This frame's per-zone colours without smoothing, for strobe boost.
+    unsmoothed: Vec<FloatColor>,
     processor: ColorProcessor,
     black_frame: super::black_frame::BlackFrameGuard,
     letterbox_detection: bool,
@@ -488,6 +504,7 @@ impl ZoneSampler {
         Self {
             zones,
             smoothed_colors: vec![FloatColor::default(); len],
+            unsmoothed: vec![FloatColor::default(); len],
             processor: ColorProcessor::new(
                 smoothing_factor,
                 hdr_tone_mapping,
@@ -698,6 +715,8 @@ impl ZoneSampler {
             .black_frame
             .apply(data, width, height, &mut output, now)
         {
+            // The whole screen is black (a strobe's dark phase, too).
+            self.unsmoothed.fill(FloatColor::default());
             return (self.output_colors(output), false);
         }
         self.frame_count += 1;
@@ -864,6 +883,7 @@ impl ZoneSampler {
             } else {
                 self.processor.clone()
             };
+            self.unsmoothed[i] = processor.unsmoothed(mean_color, highlight, max_luma);
             let smoothed = processor.process(
                 mean_color,
                 highlight,
@@ -889,6 +909,11 @@ impl ZoneSampler {
             .zip(results)
             .map(|(z, c)| (z.channel_id, c.to_rgb()))
             .collect()
+    }
+
+    /// The last frame's per-light colours without smoothing, in output order.
+    pub fn unsmoothed_colors(&self) -> Vec<RgbColor> {
+        self.unsmoothed.iter().map(|c| c.to_rgb()).collect()
     }
 
     #[allow(dead_code)]

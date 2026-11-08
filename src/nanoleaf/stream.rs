@@ -118,6 +118,8 @@ pub struct NanoleafPerimeterSampler {
     zones: Vec<PerimeterZone>,
     alignment: Option<NanoleafAlignment>,
     smoothed_colors: Vec<FloatColor>,
+    /// This frame's per-panel colours without smoothing, for strobe boost.
+    unsmoothed: Vec<FloatColor>,
     active_rect: Option<ActiveRect>,
     processor: ColorProcessor,
     black_frame: crate::color::black_frame::BlackFrameGuard,
@@ -171,6 +173,7 @@ impl NanoleafPerimeterSampler {
             zones: Vec::new(),
             alignment: None,
             smoothed_colors: Vec::new(),
+            unsmoothed: Vec::new(),
             active_rect: None,
             processor: ColorProcessor::new(
                 0.35,
@@ -219,6 +222,7 @@ impl NanoleafPerimeterSampler {
             })
             .collect();
         self.smoothed_colors = vec![FloatColor::default(); len];
+        self.unsmoothed = vec![FloatColor::default(); len];
         self.alignment = Some(alignment);
         self.black_frame.reset();
         self.last_sample = None;
@@ -552,6 +556,8 @@ impl NanoleafPerimeterSampler {
             .black_frame
             .apply(frame_data, width, height, &mut output, now)
         {
+            // The whole screen is black (a strobe's dark phase, too).
+            self.unsmoothed.fill(FloatColor::default());
             return self.output_colors(output);
         }
         let (act_x_min, act_x_max, act_y_min, act_y_max) = match self.active_rect {
@@ -605,6 +611,7 @@ impl NanoleafPerimeterSampler {
 
             let (mean_color, highlight, max_luma) = region.finish();
 
+            self.unsmoothed[i] = self.processor.unsmoothed(mean_color, highlight, max_luma);
             let current = self.smoothed_colors[i];
             let smoothed = self.processor.process(
                 mean_color,
@@ -619,6 +626,15 @@ impl NanoleafPerimeterSampler {
 
         output.clone_from(&self.smoothed_colors);
         self.output_colors(output)
+    }
+
+    /// The last frame's per-panel colours without smoothing, with the output
+    /// trim applied like `sample_frame`'s result.
+    pub fn unsmoothed_colors(&self) -> Vec<RgbColor> {
+        self.unsmoothed
+            .iter()
+            .map(|c| c.scale(self.brightness_multiplier).to_rgb())
+            .collect()
     }
 
     fn output_colors(&self, mut result: Vec<FloatColor>) -> Vec<RgbColor> {

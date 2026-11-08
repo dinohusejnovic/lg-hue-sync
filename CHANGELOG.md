@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-07
+
+### Changed
+- Strobe boost works per light: each light watches its own part of the picture before smoothing, and starts strobing about 0.3 s into a strobe (three alternating dim/bright flips). Detection is relative (at least twice as bright, ignoring near-black noise), so strobes in dark concert footage register. A strobing light alternates between the dimmest and brightest colours its zone showed in the last second, at the strobe's own rate up to the configured maximum; lights over steady parts of the picture keep following it normally.
+
 ## [1.2.1] - 2026-11-07
 
 ### Fixed
