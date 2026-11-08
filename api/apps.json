@@ -12,21 +12,21 @@
       "id": "org.webosbrew.lg-hue-sync",
       "title": "Hue & Nanoleaf Sync",
       "iconUri": "https://dinohusejnovic.github.io/lg-hue-sync/icon.png",
-      "manifestUrl": "https://github.com/dinohusejnovic/lg-hue-sync/releases/download/v1.2.1/manifest.json",
+      "manifestUrl": "https://github.com/dinohusejnovic/lg-hue-sync/releases/download/v1.3.0/manifest.json",
       "manifest": {
         "id": "org.webosbrew.lg-hue-sync",
-        "version": "1.2.1",
+        "version": "1.3.0",
         "type": "web",
         "title": "Hue & Nanoleaf Sync",
         "appDescription": "Philips Hue & Nanoleaf Ambient Lighting Controller",
         "iconUri": "https://dinohusejnovic.github.io/lg-hue-sync/icon.png",
         "sourceUrl": "https://github.com/dinohusejnovic/lg-hue-sync",
         "rootRequired": true,
-        "ipkUrl": "https://github.com/dinohusejnovic/lg-hue-sync/releases/download/v1.2.1/org.webosbrew.lg-hue-sync_1.2.1_all.ipk",
+        "ipkUrl": "https://github.com/dinohusejnovic/lg-hue-sync/releases/download/v1.3.0/org.webosbrew.lg-hue-sync_1.3.0_all.ipk",
         "ipkHash": {
-          "sha256": "7580f70b462253327552bd788914f0b9e7a0c963ac96782fd0ba6154d4488594"
+          "sha256": "5fa9fccd52c540047595e2fe02e562f44362c027817bb569c5ec9793d0337f58"
         },
-        "ipkSize": 4166054
+        "ipkSize": 4167720
       },
       "pool": "main",
       "shortDescription": "Philips Hue & Nanoleaf Ambient Lighting Controller"
